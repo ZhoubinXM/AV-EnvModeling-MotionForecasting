@@ -1,0 +1,7 @@
+example
+**/__pycache__
+.vscode
+log
+.idea
+output
+.history

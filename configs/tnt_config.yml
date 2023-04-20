@@ -1,0 +1,18 @@
+# General parameters
+batch_size: 256
+feature_size: 128
+max_vector_num: 256
+history_traj_time: 2
+predict_traj_time: 3
+history_points: 20
+prediction_points: 30
+extra_points: 30
+
+dataset:
+  datapath: "/data/nio_dataset/database_with_label"
+  snapshotpath: "/data/guifeng/pred_snapshot"
+  num_workers: 32
+  down_sample_rate: 3
+
+
+

@@ -1,0 +1,56 @@
+# General parameters
+batch_size: 256
+num_workers: 1
+log_freq: 100
+
+# Dataset
+dataset: adms_dataset
+datafile:
+  polylines: '/data/nio_dataset/processed_data/obj_vector_1_of_dlb.npy'
+  masks: '/data/nio_dataset/processed_data/mask_1_of_dlb.npy'
+  labels: '/data/nio_dataset/processed_data/label_1_of_dlb.npy'
+  driver_dense_features: '/data/nio_dataset/processed_data/driver_dense_feature_1_of_dlb.npy'
+
+# Model parameters
+# Encoder parameters
+encoder_type: 'deepfm_subgraph'
+encoder_args:
+  veh_cate_fea_nuniqs: [3, 5, 8]
+  veh_nume_fea_size: 4
+  feature_size: 128
+  driver_cate_fea_nuniqs: [4, 7, 8, 6]
+  driver_nume_fea_size: 9
+
+
+# Aggregator parameters
+aggregator_type: 'global_graph'
+aggregator_args:
+  feature_size: 128
+
+
+# Decoder parameters
+decoder_type: 'mlp'
+decoder_args:
+  feature_size: 256
+  hidden_size: 64
+  output_size: 1
+
+
+# Optimizer parameters
+optim_args:
+  lr: 0.001
+
+
+losses: ['mse']
+loss_weights: [1]
+loss_args:
+  -
+
+tr_metrics: ['mse']
+tr_metric_args:
+  -
+
+val_metrics: ['mse']
+val_metric_args:
+  -
+
