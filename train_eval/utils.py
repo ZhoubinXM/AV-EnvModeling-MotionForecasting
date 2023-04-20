@@ -1,9 +1,11 @@
+import os
 import math
+import logging
+import logging.handlers
 import torch.optim
 from typing import Dict, Union
 import torch
 import numpy as np
-
 
 # Initialize device:
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -35,3 +37,40 @@ def convert_double_to_float(data: Union[Dict, torch.Tensor]):
         return data
     else:
         return data
+
+
+def init_log(
+        log_path,
+        logger_name='root',
+        level=logging.INFO,
+        when='D',
+        backup=7,
+        format="%(levelname)s: %(asctime)s: %(filename)s:%(lineno)d:[%(funcName)s] -> %(message)s",
+        datefmt="%m-%d %H:%M:%S"):
+    """init log"""
+    formatter = logging.Formatter(format, datefmt)
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(level)
+
+    dir = os.path.dirname(log_path)
+    if not os.path.isdir(dir):
+        os.makedirs(dir, exist_ok=True)
+
+    handler = logging.handlers.TimedRotatingFileHandler(log_path,
+                                                        when=when,
+                                                        backupCount=backup)
+    handler.setLevel(level)
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+    handler = logging.handlers.TimedRotatingFileHandler(log_path + '.wf',
+                                                        when=when,
+                                                        backupCount=backup)
+    handler.setLevel(logging.WARNING)
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
