@@ -1,24 +1,35 @@
-import torch.optim
-import torch.utils.data as torch_data
-from typing import Dict
-from train_eval.initialization import initialize_adms_model,\
-    initialize_adms_dataset, initialize_metric
-import torch
 import time
 import math
 import os
-import train_eval.utils as u
-from datasets.adms_dataset import adms_collate
-from torch.utils.data.sampler import SubsetRandomSampler
-
 import numpy as np
-from matplotlib import pyplot as plt
 import matplotlib
+from matplotlib import pyplot as plt
+from typing import Dict
+from tqdm import tqdm as tqdm_
+from functools import partial
 
 matplotlib.use('Agg')
+
+import torch
+import torch.optim
+import torch.distributed as dist
+import torch.multiprocessing as mp
+import torch.utils.data as torch_data
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import RandomSampler
+from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data.sampler import SubsetRandomSampler
+
+import train_eval.utils as u
+from train_eval import logger
+from datasets.adms_dataset import adms_collate
+from train_eval.initialization import initialize_adms_model,\
+    initialize_adms_dataset, initialize_metric
+from train_eval.utils import batch_list_to_batch_tensors, is_main_device
 import global_var
 
 global_var._init()
+tqdm = partial(tqdm_, dynamic_ncols=True)
 
 # Initialize device:
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -28,8 +39,13 @@ class Trainer:
     """
     Trainer class for running train loops
     """
-
-    def __init__(self, cfg: Dict, data_root: str, data_dir: str, checkpoint_path=None, just_weights=False, writer=None):
+    def __init__(self,
+                 cfg: Dict,
+                 data_root: str,
+                 data_dir: str,
+                 checkpoint_path=None,
+                 just_weights=False,
+                 writer=None):
         """
         Initialize trainer object
         :param cfg: Configuration parameters
@@ -40,130 +56,175 @@ class Trainer:
         :param writer: Tensorboard summary writer
         """
 
-        # TODO:Initialize datasets use data_root, data_dir:
-        dataset = initialize_adms_dataset(cfg['dataset'], cfg['datafile'])
-        dataset_size = len(dataset)
-        indices = list(range(dataset_size))
-        split = int(np.floor(0.1 * dataset_size))
-        np.random.seed(42)
-        np.random.shuffle(indices)
-        train_len = 1000
-        val_len = 100
-        if dataset_size < train_len + val_len:
-            train_indices, val_indices = indices[split:], indices[:split]
-        else:
-            train_indices, val_indices = indices[:train_len], indices[train_len:train_len + val_len]
-        train_sampler = SubsetRandomSampler(train_indices)
-        valid_sampler = SubsetRandomSampler(val_indices)
+        # Init params
+        self.distribute_training: int = cfg['distribute_training']
+        self.optim_args: Dict = cfg['optim_args']
+        self.batch_size: int = cfg['batch_size']
+        self.world_size: int = cfg['world_size']
+        self.output_dir = 'output/test_av/'
+        self.num_epoch = 200
 
-        # Initialize data loaders. for train, shuffle is true.
-        self.tr_dl = torch_data.DataLoader(
-            dataset,
-            cfg['batch_size'],
-            #    True,
-            num_workers=cfg['num_workers'],
-            sampler=train_sampler,
-            drop_last=True,
-            collate_fn=adms_collate)
-        # batch size 1 for eval
-        self.val_dl = torch_data.DataLoader(
-            dataset,
-            1,
-            # False,
-            num_workers=cfg['num_workers'],
-            sampler=valid_sampler,
-            drop_last=True,
-            collate_fn=adms_collate)
-
-        print("Train dataset length: ", len(self.tr_dl) * cfg['batch_size'], ", val dataset length: ", len(self.val_dl))
+        # Initialize datasets:
+        self.dataset = initialize_adms_dataset(cfg['dataset'], cfg['datafile'])
 
         # Initialize model
-        self.model = initialize_adms_model(cfg['encoder_type'], cfg['aggregator_type'], cfg['decoder_type'],
-                                           cfg['encoder_args'], cfg['aggregator_args'], cfg['decoder_args'])
-        self.model = self.model.float().to(device)
-
-        # Initialize optimizer
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=cfg['optim_args']['lr'])
+        self.model = initialize_adms_model(
+            cfg['encoder_type'], cfg['aggregator_type'], cfg['decoder_type'],
+            cfg['encoder_args'], cfg['aggregator_args'], cfg['decoder_args'])
+        self.model = self.model.float()
 
         # Initialize epochs
         self.current_epoch = 0
 
-        # TODO:Initialize losses
-        self.losses = [initialize_metric(cfg['losses'][i], cfg['loss_args'][i]) for i in range(len(cfg['losses']))]
+        self.losses = [
+            initialize_metric(cfg['losses'][i], cfg['loss_args'][i])
+            for i in range(len(cfg['losses']))
+        ]
         self.loss_weights = cfg['loss_weights']
-        #
-        # TODO:Initialize metrics
+
         self.train_metrics = [
-            initialize_metric(cfg['tr_metrics'][i], cfg['tr_metric_args'][i]) for i in range(len(cfg['tr_metrics']))
+            initialize_metric(cfg['tr_metrics'][i], cfg['tr_metric_args'][i])
+            for i in range(len(cfg['tr_metrics']))
         ]
         self.val_metrics = [
-            initialize_metric(cfg['val_metrics'][i], cfg['val_metric_args'][i]) for i in range(len(cfg['val_metrics']))
+            initialize_metric(cfg['val_metrics'][i], cfg['val_metric_args'][i])
+            for i in range(len(cfg['val_metrics']))
         ]
         self.val_metric = math.inf
         self.min_val_metric = math.inf
 
         # Print metrics after these many mini-batches to keep track of training
-        self.log_period = len(self.tr_dl) // cfg['log_freq']
+        self.log_period = len(self.dataset) // cfg['log_freq']
         if not self.log_period:
             self.log_period = 1
 
         # Initialize tensorboard writer
-        self.writer = writer
+        # self.writer = writer
         self.tb_iters = 0
         self.has_add_graph = False
 
         # Load checkpoint if checkpoint path is provided
         if checkpoint_path is not None:
-            print()
-            print("Loading checkpoint from " + checkpoint_path + " ...", end=" ")
+            logger.info()
+            logger.info("Loading checkpoint from " + checkpoint_path + " ...")
             self.load_checkpoint(checkpoint_path, just_weights=just_weights)
-            print("Done")
+            logger.info("Done")
 
-    def train(self, num_epochs: int, output_dir: str):
+    def train(self):
         """
         Main function to train model
-        :param num_epochs: Number of epochs to run training for
-        :param output_dir: Output directory to store tensorboard logs and checkpoints
         :return:
         """
+        if self.distribute_training:
+            spawn_context = mp.spawn(self._train,
+                                     args=(self.distribute_training),
+                                     nprocs=self.distribute_training,
+                                     join=False)
+            while not spawn_context.join():
+                pass
+        else:
+            logger.error(
+                'Please set "--distributed_training 1" to use single gpu')
+
+    def _train(self, rank: int, world_size: int):
+        output_dir = self.output_dir
+        num_epochs = self.num_epoch
+        if world_size > 0:
+            print(f"Running DDP on rank {rank}.")
+
+            def setup(rank, world_size):
+                os.environ['MASTER_ADDR'] = 'localhost'
+                os.environ['MASTER_PORT'] = 12907
+
+                # initialize the process group
+                dist.init_process_group(
+                    "nccl", rank=rank, world_size=world_size
+                )  # block process until processes joined
+
+            setup(rank, world_size)
+            self.model.to(rank)
+            model = DDP(self.model,
+                        device_ids=[rank],
+                        find_unused_parameters=True)
+        else:
+            model = self.model.to(rank)
+            # Initialize optimizer
+        optimizer = torch.optim.Adam(model.parameters(),
+                                     lr=self.optim_args['lr'])
+        if self.distributed_training:
+            dist.barrier()
+
+        train_sampler = DistributedSampler(self.dataset, shuffle=True)
+        assert self.batch_size == 64, 'The optimal total batch size for training is 64'
+        assert self.batch_size % world_size == 0
+
+        train_dataloader = torch.utils.data.DataLoader(
+            self.dataset,
+            sampler=train_sampler,
+            batch_size=self.batch_size // world_size,
+            collate_fn=batch_list_to_batch_tensors)
 
         # Run training, validation for given number of epochs
         start_epoch = self.current_epoch
         for epoch in range(start_epoch, start_epoch + num_epochs):
 
             # Set current epoch
+            self.learning_rate_decay(epoch, optimizer)
             self.current_epoch = epoch
-            print()
-            print('Epoch (' + str(self.current_epoch + 1) + '/' + str(start_epoch + num_epochs) + ')')
+            # if rank == 0:
+                # logger.info()
+                # logger.info('Epoch (' + str(self.current_epoch + 1) + '/' +
+                #             str(start_epoch + num_epochs) + ')')
+                # logger.info('Learning Rate = %5.8f' %
+                #             optimizer.state_dict()['param_groups'][0]['lr'])
+            train_sampler.set_epoch(epoch - start_epoch)
 
-            # self.learning_rate_decay(epoch, self.optimizer)
+            if rank == 0:
+                iter_bar = tqdm(train_dataloader, desc='Iter (loss=X.XXX)')
+            else:
+                iter_bar = train_dataloader
 
             # Train
-            train_epoch_metrics, _, _ = self.run_epoch('train', self.tr_dl)
+            train_epoch_metrics, _, _ = self.run_epoch(model,
+                                                       mode='train',
+                                                       iter_bar=iter_bar,
+                                                       device=rank,
+                                                       optimizer=optimizer)
             self.print_metrics(train_epoch_metrics, self.tr_dl, mode='train')
-            self.log_tensorboard_metrics(train_epoch_metrics, mode='train')
+            # self.log_tensorboard_metrics(train_epoch_metrics, mode='train')
 
             # Validate
             with torch.no_grad():
-                val_epoch_metrics, prediction, gt = self.run_epoch('val', self.val_dl)
+                val_epoch_metrics, prediction, gt = self.run_epoch(
+                    'val', self.val_dl)
             self.print_metrics(val_epoch_metrics, self.val_dl, mode='val')
-            self.log_tensorboard_metrics(val_epoch_metrics, mode='val')
+            # self.log_tensorboard_metrics(val_epoch_metrics, mode='val')
 
             # Update validation metric using first metric
-            self.val_metric = val_epoch_metrics[str(self.val_metrics[0])[:-2]] / val_epoch_metrics['minibatch_count']
+            self.val_metric = val_epoch_metrics[str(
+                self.val_metrics[0]
+            )[:-2]] / val_epoch_metrics['minibatch_count']
             # self.val_metric = val_epoch_metrics['rel'] / val_epoch_metrics['minibatch_count']
 
             # save best checkpoint when applicable
             if self.val_metric < self.min_val_metric:
                 self.min_val_metric = self.val_metric
-                self.save_checkpoint(os.path.join(output_dir, 'checkpoints', 'best.tar'))
-                self.save_model(os.path.join(output_dir, 'saved_model', 'ori_best_adms_model.pth'))
-                np.save(os.path.join(output_dir, 'saved_model', 'ori_prediction.npy'), prediction)
-                np.save(os.path.join(output_dir, 'saved_model', 'ori_gt.npy'), gt)
+                self.save_checkpoint(
+                    os.path.join(output_dir, 'checkpoints', 'best.tar'))
+                self.save_model(
+                    os.path.join(output_dir, 'saved_model',
+                                 'ori_best_adms_model.pth'))
+                np.save(
+                    os.path.join(output_dir, 'saved_model',
+                                 'ori_prediction.npy'), prediction)
+                np.save(os.path.join(output_dir, 'saved_model', 'ori_gt.npy'),
+                        gt)
                 # np.save(os.path.join(output_dir, 'saved_model', 'per5_' + str(self.val_metric)), gt)
 
             # Save checkpoint every epoch.
-            self.save_checkpoint(os.path.join(output_dir, 'checkpoints', str(self.current_epoch) + '.tar'))
+            self.save_checkpoint(
+                os.path.join(output_dir, 'checkpoints',
+                             str(self.current_epoch) + '.tar'))
 
             # tensorboard global step
             self.tb_iters += 1
@@ -171,16 +232,19 @@ class Trainer:
         # self.save_model(os.path.join(output_dir, 'saved_model', 'adms_model_' + time.strftime("%Y%m%d_%H%M%S") + '.pth'))
         # self.save_model(os.path.join(output_dir, 'saved_model', 'adms_model.pth'))
 
-    def run_epoch(self, mode: str, dl: torch_data.DataLoader):
+    def run_epoch(self, model, mode: str, iter_bar, device, optimizer):
         """
         Runs an epoch for a given dataloader
         :param mode: 'train' or 'val'
         :param dl: Dataloader object
         """
+        if self.distribute_training:
+            assert dist.get_world_size() == self.distribute_training
+
         if mode == 'val':
-            self.model.eval()
+            model.eval()
         else:
-            self.model.train()
+            model.train()
 
         # Initialize epoch metrics
         epoch_metrics = self.initialize_metrics_for_epoch(mode)
@@ -193,67 +257,34 @@ class Trainer:
         prediction_val = np.empty(val_len)
         label_val = np.empty(val_len)
 
-        for i, data in enumerate(dl):
+        for i, batch in enumerate(iter_bar):
             # Load data
-            data = u.send_to_device(u.convert_double_to_float(data))
+            # data = u.send_to_device(u.convert_double_to_float(data))
 
-            (veh_cate_features, veh_dense_features, driver_cate_features, driver_dense_features, polylines, polynum,
-             attention_mask) = self.model.preprocess_inputs(data['inputs'])
+            # (veh_cate_features, veh_dense_features, driver_cate_features,
+            #  driver_dense_features, polylines, polynum,
+            #  attention_mask) = self.model.preprocess_inputs(data['inputs'])
 
-            # if mode == 'val':
-            #     polylines_expand = torch.zeros([256, 19, 128], device=polylines.device)
-            #     mask_expand = torch.ones([256, 19, 64],  device=attention_mask.device)*(-10000.0)
-            #     polylines_expand[:polynum[0],:,:] = polylines
-            #     mask_expand[:polynum[0],:,:] = attention_mask
-            #     polylines = polylines_expand
-            #     attention_mask = mask_expand
-            # Forward pass
-            predictions = self.model(veh_cate_features, veh_dense_features, driver_cate_features, driver_dense_features,
-                                     polylines, polynum, attention_mask)
-
-            # # visualize model
-            # if not self.has_add_graph:
-            #     self.writer.add_graph(self.model, (veh_cate_features, veh_dense_features, driver_cate_features,
-            #                                        driver_dense_features, polylines, polynum, attention_mask))
-            #     self.has_add_graph = True
+            predictions = model(batch, device)
 
             # Compute loss and backpropagation if training
             if mode == 'train':
-                loss = self.compute_loss(predictions, data['label'])
-                # loss = torch.div(torch.abs(predictions - data['label']), data['label']).mean()
-                self.back_prop(loss)
-                # if i == 0:
-                #     pre_np = predictions.detach().cpu().numpy().squeeze()
-                #     label_np = data['label'].detach().cpu().numpy().squeeze()
-                #     self.log_tensorboard_fig(pre_np, label_np, mode)
+                loss = self.compute_loss(predictions, batch, device)
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
 
-                #     # debug
-                #     fig, ax = plt.subplots()
-                #     x = range(128)
-                #     # plt.scatter(x, global_var.get_value('veh_vector')[0], color="r", label="veh_vector")
-                #     plt.scatter(x, global_var.get_value('driver_vector')[0], color="b", label="driver_vector")
-                #     plt.scatter(x, global_var.get_value('global_vector')[0], color="y", label="global_vector")
-                #     plt.legend()
-                #     self.writer.add_figure(mode + "/vectors.fig", fig, self.tb_iters)
-                #     # fig, ax = plt.subplots()
-                #     # for i in range(2,debug_vec.shape[1]):
-                #     #     plt.scatter(x, debug_vec[0][i])
-                #     # self.writer.add_figure(mode + "/obj_vectors.fig", fig, self.tb_iters)
-
-                #     # debug input
-                #     # self.log_tensorboard_input_data(data)
-
-            elif mode == "val":
-                prediction_val[i] = predictions.detach().cpu().numpy().squeeze()
-                label_val[i] = data['label'].detach().cpu().numpy().squeeze()
+            if is_main_device(device):
+                iter_bar.set_description(f'loss={loss.item():.3f}')
 
             # Keep time
             minibatch_time = time.time() - st_time
             st_time = time.time()
 
             # Aggregate metrics
-            minibatch_metrics, epoch_metrics = self.aggregate_metrics(epoch_metrics, minibatch_time, predictions, data['label'],
-                                                                      mode)
+            minibatch_metrics, epoch_metrics = self.aggregate_metrics(
+                epoch_metrics, minibatch_time, predictions, data['label'],
+                mode)
 
             # Display metrics at a predefined frequency
             if i % self.log_period == self.log_period - 1 and len(dl) - i != 1:
@@ -272,19 +303,23 @@ class Trainer:
             for p in optimizer.param_groups:
                 p['lr'] *= 0.5
 
-    def compute_loss(self, model_outputs: torch.Tensor, ground_truth: torch.Tensor) -> torch.Tensor:
+    def compute_loss(self, model_outputs: torch.Tensor, ground_truth,
+                     device) -> torch.Tensor:
         """
         Computes loss given model outputs and ground truth labels
         """
         # TODO: Implement the calculation of the multi-loss
-        loss_vals = [loss(model_outputs, ground_truth) for loss in self.losses]
+        loss_vals = [
+            loss(model_outputs, ground_truth, device) for loss in self.losses
+        ]
         total_loss = torch.tensor(0).float().to(device)
         for n in range(len(loss_vals)):
             total_loss += self.loss_weights[n] * loss_vals[n]
 
         return total_loss
 
-    def compute_metric(self, model_outputs: torch.Tensor, ground_truth: torch.Tensor) -> torch.Tensor:
+    def compute_metric(self, model_outputs: torch.Tensor,
+                       ground_truth: torch.Tensor) -> torch.Tensor:
         """
         Computes loss given model outputs and ground truth labels
         """
@@ -310,7 +345,8 @@ class Trainer:
 
         return epoch_metrics
 
-    def aggregate_metrics(self, epoch_metrics: Dict, minibatch_time: float, model_outputs: torch.Tensor,
+    def aggregate_metrics(self, epoch_metrics: Dict, minibatch_time: float,
+                          model_outputs: torch.Tensor,
                           ground_truth: torch.Tensor, mode: str):
         """
         Aggregates metrics by minibatch for the entire epoch
@@ -319,30 +355,36 @@ class Trainer:
 
         minibatch_metrics = {}
 
-        # TODO: Compute different metrics
+        # Compute different metrics
         for metric in metrics:
-            minibatch_metrics[str(metric)[:-2]] = metric(model_outputs, ground_truth).item()
+            minibatch_metrics[str(metric)[:-2]] = metric(
+                model_outputs, ground_truth).item()
 
         epoch_metrics['minibatch_count'] += 1
         epoch_metrics['time_cost'] += minibatch_time
         for metric in metrics:
-            epoch_metrics[str(metric)[:-2]] += minibatch_metrics[str(metric)[:-2]]
+            epoch_metrics[str(metric)[:-2]] += minibatch_metrics[str(metric)
+                                                                 [:-2]]
 
         # tmp for debug
-        minibatch_metrics['rel'] = torch.div(torch.abs(model_outputs - ground_truth), ground_truth).mean().item()
+        minibatch_metrics['rel'] = torch.div(
+            torch.abs(model_outputs - ground_truth),
+            ground_truth).mean().item()
         if 'rel' not in epoch_metrics.keys():
             epoch_metrics['rel'] = 0
         epoch_metrics['rel'] += minibatch_metrics['rel']
 
         return minibatch_metrics, epoch_metrics
 
-    def print_metrics(self, epoch_metrics: Dict, dl: torch_data.DataLoader, mode: str):
+    def print_metrics(self, epoch_metrics: Dict, dl: torch_data.DataLoader,
+                      mode: str):
         """
         Prints aggregated metrics
         """
         metrics = self.train_metrics if mode == 'train' else self.val_metrics
         minibatches_left = len(dl) - epoch_metrics['minibatch_count']
-        eta = (epoch_metrics['time_cost'] / epoch_metrics['minibatch_count']) * minibatches_left
+        eta = (epoch_metrics['time_cost'] /
+               epoch_metrics['minibatch_count']) * minibatches_left
         epoch_progress = int(epoch_metrics['minibatch_count'] / len(dl) * 100)
 
         progress_bar = '['
@@ -353,11 +395,16 @@ class Trainer:
                 progress_bar += ' '
         progress_bar += ']'
         print('\rTraining:  ' if mode == 'train' else '\rValidating:', end=" ")
-        print(progress_bar, str(epoch_progress) if epoch_progress == 100 else (" " + str(epoch_progress)), '%', end=", ")
+        print(progress_bar,
+              str(epoch_progress) if epoch_progress == 100 else
+              (" " + str(epoch_progress)),
+              '%',
+              end=", ")
         print('ETA:', int(eta), end="s, ")
         print('Metrics', end=": { ")
         for metric in metrics:
-            metric_val = epoch_metrics[str(metric)[:-2]] / epoch_metrics['minibatch_count']
+            metric_val = epoch_metrics[str(
+                metric)[:-2]] / epoch_metrics['minibatch_count']
             print(str(metric)[:-2] + ':', format(metric_val, '.2f'), end=", ")
         print('\b\b }     ', end="\n" if minibatches_left == 0 else "")
 
@@ -397,7 +444,8 @@ class Trainer:
         Logs mini-batch metrics during training
         """
         for metric_name, metric_val in minibatch_metrics.items():
-            self.writer.add_scalar('train/' + metric_name, metric_val, self.tb_iters)
+            self.writer.add_scalar('train/' + metric_name, metric_val,
+                                   self.tb_iters)
         self.tb_iters += 1
 
     def log_tensorboard_val(self, epoch_metrics: Dict):
@@ -407,7 +455,8 @@ class Trainer:
         for metric_name, metric_val in epoch_metrics.items():
             if metric_name != 'minibatch_count' and metric_name != 'time_cost':
                 res = metric_val / epoch_metrics['minibatch_count']
-                self.writer.add_scalar('val/' + metric_name, res, self.tb_iters)
+                self.writer.add_scalar('val/' + metric_name, res,
+                                       self.tb_iters)
 
     def log_tensorboard_metrics(self, epoch_metrics: Dict, mode: str):
         """
@@ -416,9 +465,11 @@ class Trainer:
         for metric_name, metric_value in epoch_metrics.items():
             if metric_name != 'minibatch_count' and metric_name != 'time_cost':
                 res = metric_value / epoch_metrics['minibatch_count']
-                self.writer.add_scalar(mode + "/" + metric_name, res, self.tb_iters)
+                self.writer.add_scalar(mode + "/" + metric_name, res,
+                                       self.tb_iters)
 
-    def log_tensorboard_fig(self, predictions: np.array, labels: np.array, mode: str):
+    def log_tensorboard_fig(self, predictions: np.array, labels: np.array,
+                            mode: str):
         fig, ax = plt.subplots()
         x = range(len(predictions))
         for i in range(len(predictions)):
@@ -430,12 +481,17 @@ class Trainer:
 
     def log_tensorboard_input_data(self, data):
 
-        veh_cate_features = data['inputs']['veh_cate_features'].detach().cpu().numpy()
-        veh_dense_features = data['inputs']['veh_dense_features'].detach().cpu().numpy()
-        driver_cate_features = data['inputs']['driver_cate_features'].detach().cpu().numpy()
-        driver_dense_features = data['inputs']['driver_dense_features'].detach().cpu().numpy()
+        veh_cate_features = data['inputs']['veh_cate_features'].detach().cpu(
+        ).numpy()
+        veh_dense_features = data['inputs']['veh_dense_features'].detach().cpu(
+        ).numpy()
+        driver_cate_features = data['inputs']['driver_cate_features'].detach(
+        ).cpu().numpy()
+        driver_dense_features = data['inputs']['driver_dense_features'].detach(
+        ).cpu().numpy()
         polylines = data['inputs']['polylines'].detach().cpu().numpy()
-        attention_mask = data['inputs']['attention_mask'].detach().cpu().numpy()
+        attention_mask = data['inputs']['attention_mask'].detach().cpu().numpy(
+        )
         polynum = data['inputs']['polynum'].detach().cpu().numpy()
         # label = data["label"]
 

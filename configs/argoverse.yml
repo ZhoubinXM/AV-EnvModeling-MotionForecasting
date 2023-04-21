@@ -1,0 +1,78 @@
+# General parameters
+batch_size: 64
+num_workers: 1
+log_freq: 100
+distribute_training: 1
+num_epochs: 200
+world_size: 8
+
+# Dataset
+dataset: argoverse_dataset
+datafile:
+
+  core_num: 48
+  batch_size: 64
+  direction: True
+  set_predict: False
+  visualize: True
+  goals_2D: True
+  lane_scoring: True
+  future_frame_num: 30
+  hidden_size: 128
+  no_agents: False
+  use_map: True
+  semantic_lane: True
+  max_distance: 50
+  subdivide: True
+  temp_file_dir: 'data/argoverse_tmp_data'
+
+  train:
+    data_dir: '/data/jerome.zhou/motion-forecasting/train/data/'
+    reuse_temp_file: True
+  val:
+    data_dir: '/data/jerome.zhou/motion-forecasting/val/data/'
+    reuse_temp_file: False
+  test:
+    data_dir: '/data/jerome.zhou/motion-forecasting/test_obs/data/'
+    reuse_temp_file: False
+
+
+# Model parameters
+# Encoder parameters
+encoder_type: 'new_subgraph'
+encoder_args:
+  hidden_size: 128
+  depth: 3
+
+# Aggregator parameters
+aggregator_type: 'spatial_aggregator'
+aggregator_args:
+  hidden_size: 128
+
+
+# Decoder parameters
+decoder_type: 'residual_concat_mlp'
+decoder_args:
+  hidden_size: 128
+  in_features: 128
+  out_features: 366
+
+
+# Optimizer parameters
+optim_args:
+  lr: 0.001
+
+
+losses: ['variety_loss']
+loss_weights: [1]
+loss_args:
+  -
+
+tr_metrics: ['variety_loss']
+tr_metric_args:
+  -
+
+val_metrics: ['variety_loss']
+val_metric_args:
+  -
+
