@@ -60,6 +60,7 @@ if not os.path.isdir(
 # Load config
 with open(args.config, 'r') as yaml_file:
     cfg = yaml.safe_load(yaml_file)
+cfg['output_dir'] = args.output_dir
 
 # Initialize tensorboard writer
 writer = SummaryWriter(

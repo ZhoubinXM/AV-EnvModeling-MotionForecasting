@@ -499,7 +499,7 @@ class ArgoverseDataset(torch.utils.data.Dataset):
 
         if args[mode]['reuse_temp_file']:
             pickle_file = open(
-                os.path.join(args['temp_file_dir'], get_name('ex_list')), 'rb')
+                os.path.join(args['temp_file_dir'], get_name('ex_list', mode)), 'rb')
             self.ex_list = pickle.load(pickle_file)
             # self.ex_list = self.ex_list[len(self.ex_list) // 2:]
             pickle_file.close()
@@ -586,13 +586,13 @@ class ArgoverseDataset(torch.utils.data.Dataset):
                 assert False
 
             pickle_file = open(
-                os.path.join(args['temp_file_dir'], get_name('ex_list')), 'wb')
+                os.path.join(args['temp_file_dir'], get_name('ex_list', mode)), 'wb')
             pickle.dump(self.ex_list, pickle_file)
             pickle_file.close()
             logger.info(f"Preprocessed data had been stored in: {args['temp_file_dir']}")
         assert len(self.ex_list) > 0
         logger.info("valid data size is {}".format(len(self.ex_list)))
-        if args[mode]['reuse_temp_file']:
+        if not args[mode]['reuse_temp_file']:
             logger.info('max_vector_num: {}'.format(max_vector_num))
         self.batch_size = args['batch_size']
 

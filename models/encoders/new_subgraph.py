@@ -74,7 +74,7 @@ class NewSubGraph(nn.Module):
             map_polyline_start_idx: int = mapping[i_data][
                 'map_start_polyline_idx']
             for poly_idx, polyline_span in enumerate(polyline_spans[i_data]):
-                poly_tensor = torch.Tensor(
+                poly_tensor = torch.tensor(
                     polyline_matrixs[i_data][polyline_span], device=device)
                 input_list.append(poly_tensor)
                 if poly_idx > map_polyline_start_idx:

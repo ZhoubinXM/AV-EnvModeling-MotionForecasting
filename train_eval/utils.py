@@ -11,6 +11,9 @@ import torch
 import numpy as np
 import global_var as gv
 
+import matplotlib
+import matplotlib.pyplot as plt
+
 # Initialize device:
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 EPS = 1e-5
@@ -249,9 +252,41 @@ def de_merge_tensors(tensor: torch.Tensor, lengths):
 
 
 def get_dis_point_2_points(point, points):
-    assert points.ndim == 2
-    return np.sqrt(np.square(points[:, 0] - point[0]) + np.square(points[:, 1] - point[1]))
+    if points.ndim == 2:
+        return np.sqrt(np.square(points[:, 0] - point[0]) + np.square(points[:, 1] - point[1]))
+    elif points.ndim == 4:
+        gt_traj = point.unsqueeze(1).repeat(1, 6, 1, 1)
+        err = gt_traj - points[:, :, :, :2]
+        err = err[:, :, -1, :]
+        err = torch.pow(err, exponent=2)
+        err = torch.sum(err, dim=-1)
+        err = torch.pow(err, exponent=0.5)
+        err, idx = torch.min(err, dim=1)
+        return err, idx
 
 
 def is_main_device(device):
     return isinstance(device, torch.device) or device == 0
+
+
+def show_heatmaps(matrices, xlabel, ylabel, titles=None, figsize=(2.5, 2.5),
+                  cmap='Reds'):
+    """Show heatmaps of matrices.
+
+    Defined in :numref:`sec_attention-cues`"""
+    num_rows, num_cols = matrices.shape[0], matrices.shape[1]
+    fig, axes = plt.subplots(num_rows, num_cols, figsize=figsize,
+                                 sharex=True, sharey=True, squeeze=False)
+    for i, (row_axes, row_matrices) in enumerate(zip(axes, matrices)):
+        for j, (ax, matrix) in enumerate(zip(row_axes, row_matrices)):
+            pcm = ax.imshow(numpy(matrix), cmap=cmap)
+            if i == num_rows - 1:
+                ax.set_xlabel(xlabel)
+            if j == 0:
+                ax.set_ylabel(ylabel)
+            if titles:
+                ax.set_title(titles[j])
+    fig.colorbar(pcm, ax=axes, shrink=0.6)
+    return fig
+
+numpy = lambda x, *args, **kwargs: x.detach().numpy(*args, **kwargs)

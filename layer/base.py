@@ -3,6 +3,8 @@ import torch
 from torch import nn
 import numpy as np
 
+from train_eval.utils import show_heatmaps
+
 
 class LayerNorm(nn.Module):
     r"""
@@ -50,6 +52,7 @@ class GlobalGraph(nn.Module):
                  num_attention_heads=1,
                  attention_decay=False):
         super(GlobalGraph, self).__init__()
+        self.attention_decay = attention_decay
         self.num_attention_heads = num_attention_heads
         self.attention_head_size = hidden_size // num_attention_heads if attention_head_size is None else attention_head_size
         self.all_head_size = self.num_attention_heads * self.attention_head_size
@@ -104,9 +107,10 @@ class GlobalGraph(nn.Module):
                 attention_mask)
         # if utils.args.attention_decay and utils.second_span:
         #     attention_scores[:, 0, 0, 0] = attention_scores[:, 0, 0, 0] - self.attention_decay
-        attention_probs = nn.Softmax(dim=-1)(attention_scores)
+        self.attention_probs = nn.Softmax(dim=-1)(attention_scores)
+
         if mapping is not None:
-            for i, each in enumerate(attention_probs.tolist()):
+            for i, each in enumerate(self.attention_probs.tolist()):
                 mapping[i]['attention_scores'] = np.array(each[0])
         if self.attention_decay:
             # logging(self.attention_decay, prob=0.01)
@@ -115,16 +119,16 @@ class GlobalGraph(nn.Module):
                 value_layer[:, 0:1, 1:, :]
             ],
                                     dim=2)
-        context_layer = torch.matmul(attention_probs, value_layer)
+        context_layer = torch.matmul(self.attention_probs, value_layer)
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (
             self.all_head_size, )
         context_layer = context_layer.view(*new_context_layer_shape)
         if return_scores:
-            assert attention_probs.shape[1] == 1
-            attention_probs = torch.squeeze(attention_probs, dim=1)
-            assert len(attention_probs.shape) == 3
-            return context_layer, attention_probs
+            assert self.attention_probs.shape[1] == 1
+            self.attention_probs = torch.squeeze(self.attention_probs, dim=1)
+            assert len(self.attention_probs.shape) == 3
+            return context_layer, self.attention_probs
         return context_layer
 
 

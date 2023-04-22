@@ -12,6 +12,9 @@ from datasets.adms_dataset import ADMSDataset
 from datasets.argoverse_dataset import ArgoverseDataset
 
 from metric.variety_loss import VarietyLoss
+from metric.minfde_k import MinFDEK
+from metric.minade_k import MinADEK
+from metric.miss_rate import MissRateK
 from typing import Dict, Union, Optional
 
 
@@ -88,7 +91,13 @@ def initialize_metric(metric_type: str, metric_args: Dict):
     :return:
     """
     # Implementation of Model Evaluation Metrics
-    metric_mapping = {'mse': torch.nn.MSELoss, 'variety_loss': VarietyLoss}
+    metric_mapping = {
+        'mse': torch.nn.MSELoss,
+        'variety_loss': VarietyLoss,
+        'min_fde': MinFDEK,
+        'min_ade': MinADEK,
+        'miss_rate': MissRateK,
+    }
     if metric_args is not None:
         return metric_mapping[metric_type](metric_args)
     else:

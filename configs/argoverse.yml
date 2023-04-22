@@ -1,15 +1,13 @@
 # General parameters
-batch_size: 64
+batch_size: 32
 num_workers: 1
 log_freq: 100
-distribute_training: 1
 num_epochs: 200
 world_size: 8
 
 # Dataset
 dataset: argoverse_dataset
 datafile:
-
   core_num: 48
   batch_size: 64
   direction: True
@@ -31,7 +29,7 @@ datafile:
     reuse_temp_file: True
   val:
     data_dir: '/data/jerome.zhou/motion-forecasting/val/data/'
-    reuse_temp_file: False
+    reuse_temp_file: True
   test:
     data_dir: '/data/jerome.zhou/motion-forecasting/test_obs/data/'
     reuse_temp_file: False
@@ -68,11 +66,21 @@ loss_weights: [1]
 loss_args:
   -
 
-tr_metrics: ['variety_loss']
+tr_metrics: ['variety_loss', 'min_fde', 'miss_rate']
 tr_metric_args:
   -
+  - k: 6
+  - k: 6
+    dist_thresh: 2.0
 
-val_metrics: ['variety_loss']
+
+val_metrics: ['variety_loss', 'min_fde', 'min_fde', 'min_ade', 'min_ade', 'miss_rate']
 val_metric_args:
   -
+  - k: 6
+  - k: 1
+  - k: 6
+  - k: 1
+  - k: 6
+    dist_thresh: 2.0
 

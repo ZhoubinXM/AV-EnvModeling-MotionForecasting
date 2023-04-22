@@ -21,5 +21,5 @@ class DecoderResCat(nn.Module):
             [hidden_states, self.mlp(hidden_states)], dim=-1)
         hidden_states = self.fc(hidden_states)
         pred_probs = F.log_softmax(hidden_states[:, -6:], dim=-1)
-        outputs = outputs.view(hidden_states.shape[0], 6, 30, 2)
+        outputs = hidden_states[:, :-6].view(hidden_states.shape[0], 6, 30, 2)
         return outputs, pred_probs
