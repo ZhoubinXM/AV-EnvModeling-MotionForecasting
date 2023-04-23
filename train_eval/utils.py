@@ -250,10 +250,11 @@ def de_merge_tensors(tensor: torch.Tensor, lengths):
     return [tensor[i, :lengths[i]] for i in range(len(lengths))]
 
 
-
 def get_dis_point_2_points(point, points):
     if points.ndim == 2:
-        return np.sqrt(np.square(points[:, 0] - point[0]) + np.square(points[:, 1] - point[1]))
+        return np.sqrt(
+            np.square(points[:, 0] - point[0]) +
+            np.square(points[:, 1] - point[1]))
     elif points.ndim == 4:
         gt_traj = point.unsqueeze(1).repeat(1, 6, 1, 1)
         err = gt_traj - points[:, :, :, :2]
@@ -265,18 +266,26 @@ def get_dis_point_2_points(point, points):
         return err, idx
 
 
-def is_main_device(device):
-    return isinstance(device, torch.device) or device == 0
+def is_main_device(device, main_device: Optional[int] = 0) -> bool:
+    return device == main_device
 
 
-def show_heatmaps(matrices, xlabel, ylabel, titles=None, figsize=(2.5, 2.5),
+def show_heatmaps(matrices,
+                  xlabel,
+                  ylabel,
+                  titles=None,
+                  figsize=(2.5, 2.5),
                   cmap='Reds'):
     """Show heatmaps of matrices.
 
     Defined in :numref:`sec_attention-cues`"""
     num_rows, num_cols = matrices.shape[0], matrices.shape[1]
-    fig, axes = plt.subplots(num_rows, num_cols, figsize=figsize,
-                                 sharex=True, sharey=True, squeeze=False)
+    fig, axes = plt.subplots(num_rows,
+                             num_cols,
+                             figsize=figsize,
+                             sharex=True,
+                             sharey=True,
+                             squeeze=False)
     for i, (row_axes, row_matrices) in enumerate(zip(axes, matrices)):
         for j, (ax, matrix) in enumerate(zip(row_axes, row_matrices)):
             pcm = ax.imshow(numpy(matrix), cmap=cmap)
@@ -288,5 +297,6 @@ def show_heatmaps(matrices, xlabel, ylabel, titles=None, figsize=(2.5, 2.5),
                 ax.set_title(titles[j])
     fig.colorbar(pcm, ax=axes, shrink=0.6)
     return fig
+
 
 numpy = lambda x, *args, **kwargs: x.detach().numpy(*args, **kwargs)

@@ -14,5 +14,5 @@ print("LOCAL_RANK: {}\tRANK: {}\tWORLD_SIZE: {}".format(LOCAL_RANK, RANK, WORLD_
 
 dist.init_process_group('nccl')
 print("after running dist.init_process_group()")
-time.sleep(60)  # Sleep for a while to avoid exceptions that occur when some processes end too quickly.
+time.sleep(10)  # Sleep for a while to avoid exceptions that occur when some processes end too quickly.
 dist.destroy_process_group()

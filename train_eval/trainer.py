@@ -4,7 +4,7 @@ import os
 import numpy as np
 import matplotlib
 from matplotlib import pyplot as plt
-from typing import Dict
+from typing import Dict, Optional
 from tqdm import tqdm as tqdm_
 from functools import partial
 
@@ -32,7 +32,7 @@ global_var._init()
 tqdm = partial(tqdm_, dynamic_ncols=True)
 
 # Initialize device:
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class Trainer:
@@ -58,9 +58,35 @@ class Trainer:
 
         # Init params
         self.optim_args: Dict = cfg['optim_args']
-        self.batch_size: int = cfg['batch_size']
-        self.output_dir = cfg['output_dir']
-        self.num_epoch = 200
+        self.batch_size: int = int(cfg['batch_size'])
+        self.output_dir: str = cfg['output_dir']
+        self.num_epoch: int = int(cfg['num_epochs'])
+        self.viz: bool = bool(cfg['viz'])
+        self.use_cuda: bool = bool(cfg['use_cuda'])
+        self.multi_gpu: bool = bool(cfg['use_multi_gpu'])
+        self.world_size: int = int(
+            os.environ["WORLD_SIZE"]) if 'WORLD_SIZE' in os.environ else 0
+
+        # cuda or cpu
+        self.main_device: int = int(cfg['main_device'])
+        self.cuda_id = int(os.environ["LOCAL_RANK"]) if (
+            'LOCAL_RANK' in os.environ) and self.use_cuda else self.main_device
+        self.device = torch.device(
+            "cuda:{}".format(self.cuda_id)
+            if torch.cuda.is_available() and self.use_cuda else "cpu")
+        if 'WORLD_SIZE' in os.environ and self.multi_gpu:
+            self.multi_gpu = True if int(
+                os.environ['WORLD_SIZE']) > 1 else False
+        else:
+            self.multi_gpu = False
+
+        if self.multi_gpu:
+            torch.cuda.set_device(self.device)
+            dist.init_process_group('nccl', init_method='env://')
+            if 'LOCAL_RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+                print(
+                    f"CUDA: {self.cuda_id} - RANK: {os.environ['LOCAL_RANK']} / WORLD_SIZE: {os.environ['WORLD_SIZE']}"
+                )
 
         # Initialize datasets:
         self.train_dataset = initialize_adms_dataset(cfg['dataset'],
@@ -68,29 +94,56 @@ class Trainer:
         self.val_dataset = initialize_adms_dataset(cfg['dataset'],
                                                    cfg['datafile'],
                                                    mode='val')
+        if self.multi_gpu:
+            # use distributed data sampler
+            self.train_sampler = DistributedSampler(self.train_dataset,
+                                                    shuffle=True)
+
+            self.val_sampler = DistributedSampler(self.val_dataset,
+                                                  shuffle=False)
+
+            self.train_dataloader = torch.utils.data.DataLoader(
+                self.train_dataset,
+                batch_size=self.batch_size // self.world_size,
+                sampler=self.train_sampler,
+                shuffle=False,
+                collate_fn=batch_list_to_batch_tensors)
+            self.val_dataloader = torch.utils.data.DataLoader(
+                self.val_dataset,
+                batch_size=self.batch_size // self.world_size,
+                sampler=self.val_sampler,
+                shuffle=False,
+                collate_fn=batch_list_to_batch_tensors)
+        else:
+            self.train_sampler = RandomSampler(self.train_dataset)
+
+            self.train_dataloader = torch.utils.data.DataLoader(
+                self.train_dataset,
+                sampler=self.train_sampler,
+                batch_size=self.batch_size,
+                collate_fn=batch_list_to_batch_tensors)
+
+            self.val_dataloader = torch.utils.data.DataLoader(
+                self.val_dataset,
+                shuffle=False,
+                batch_size=self.batch_size,
+                collate_fn=batch_list_to_batch_tensors)
 
         # Initialize model
         self.model = initialize_adms_model(
             cfg['encoder_type'], cfg['aggregator_type'], cfg['decoder_type'],
             cfg['encoder_args'], cfg['aggregator_args'], cfg['decoder_args'])
-        self.model = self.model.float().to(device)
+        self.model = self.model.float().to(self.device)
+
+        if self.multi_gpu:
+            self.model = DDP(self.model,
+                             device_ids=[self.cuda_id],
+                             output_device=self.cuda_id,
+                             find_unused_parameters=True)
+
         # Initialize optimizer
         self.optimizer = torch.optim.Adam(self.model.parameters(),
                                           lr=self.optim_args['lr'])
-
-        train_sampler = RandomSampler(self.train_dataset)
-
-        self.train_dataloader = torch.utils.data.DataLoader(
-            self.train_dataset,
-            sampler=train_sampler,
-            batch_size=self.batch_size,
-            collate_fn=batch_list_to_batch_tensors)
-
-        self.val_dataloader = torch.utils.data.DataLoader(
-            self.val_dataset,
-            shuffle=False,
-            batch_size=self.batch_size,
-            collate_fn=batch_list_to_batch_tensors)
 
         # Initialize epochs
         self.current_epoch = 0
@@ -118,13 +171,15 @@ class Trainer:
             self.log_period = 1
 
         # Initialize tensorboard writer
-        self.writer = writer
+        if not self.multi_gpu or (self.multi_gpu and is_main_device(
+                self.cuda_id, self.main_device)):
+            self.writer = writer
         self.tb_iters = 0
         self.has_add_graph = False
 
         # Load checkpoint if checkpoint path is provided
-        if checkpoint_path is not None:
-            logger.info()
+        if checkpoint_path is not None and is_main_device(
+                self.cuda_id, self.main_device):
             logger.info("Loading checkpoint from " + checkpoint_path + " ...")
             self.load_checkpoint(checkpoint_path, just_weights=just_weights)
             logger.info("Done")
@@ -141,48 +196,67 @@ class Trainer:
             # Set current epoch
             self.learning_rate_decay(epoch, self.optimizer)
             self.current_epoch = epoch
-            logger.info(" ")
-            logger.info('Epoch (' + str(self.current_epoch + 1) + '/' +
-                        str(start_epoch + self.num_epoch) + ')')
-            logger.info('Learning Rate = %5.8f' %
-                        self.optimizer.state_dict()['param_groups'][0]['lr'])
+            if is_main_device(self.cuda_id, self.main_device):
+                logger.info(" ")
+                logger.info('Epoch (' + str(self.current_epoch + 1) + '/' +
+                            str(start_epoch + self.num_epoch) + ')')
+                logger.info(
+                    'Learning Rate = %5.8f' %
+                    self.optimizer.state_dict()['param_groups'][0]['lr'])
+            if self.multi_gpu:
+                self.train_sampler.set_epoch(epoch - start_epoch)
 
-            iter_bar = tqdm(self.train_dataloader, desc='Iter (loss=X.XXX)')
+            if is_main_device(self.cuda_id, self.main_device):
+                iter_bar = tqdm(
+                    self.train_dataloader,
+                    desc='Iter (loss=X.XXX / minfde6=X.XXX / mr=X.XXX)')
+            else:
+                iter_bar = self.train_dataloader
 
             # Train
             train_epoch_metrics = self.run_epoch(mode='train',
                                                  iter_bar=iter_bar)
-            self.print_metrics(train_epoch_metrics,
-                               self.train_dataloader,
-                               mode='train')
+
+            if is_main_device(self.cuda_id, self.main_device):
+                self.print_metrics(train_epoch_metrics,
+                                   self.train_dataloader,
+                                   mode='train')
             # self.log_tensorboard_metrics(train_epoch_metrics, mode='train')
 
             # Validate
             with torch.no_grad():
-                val_iter_bar = tqdm(self.val_dataloader,
-                                    desc='Iter (loss=X.XXX)')
+                if is_main_device(self.cuda_id, self.main_device):
+                    val_iter_bar = tqdm(
+                        self.val_dataloader,
+                        desc='Val: ')
+                else:
+                    val_iter_bar = self.val_dataloader
                 val_epoch_metrics = self.run_epoch('val', val_iter_bar)
-            self.print_metrics(val_epoch_metrics,
-                               self.val_dataloader,
-                               mode='val')
+
+            if is_main_device(self.cuda_id, self.main_device):
+                self.print_metrics(val_epoch_metrics,
+                                   self.val_dataloader,
+                                   mode='val')
 
             # Update validation metric using first metric
             self.val_metric = val_epoch_metrics[str(
-                self.val_metrics[0])] / val_epoch_metrics['minibatch_count']
+                self.val_metrics[1])] / val_epoch_metrics['minibatch_count']
 
             # save best checkpoint when applicable
-            if self.val_metric < self.min_val_metric:
+            if is_main_device(self.cuda_id, self.main_device
+                              ) and self.val_metric < self.min_val_metric:
                 self.min_val_metric = self.val_metric
                 self.save_checkpoint(
                     os.path.join(self.output_dir, 'checkpoints', 'best.tar'))
-                self.save_model(
-                    os.path.join(self.output_dir, 'saved_model',
-                                 'ori_best_adms_model.pth'))
+                # self.save_model(
+                #     os.path.join(self.output_dir, 'saved_model',
+                #                  'ori_best_adms_model.pth'))
 
             # Save checkpoint every epoch.
-            self.save_checkpoint(
-                os.path.join(self.output_dir, 'checkpoints',
-                             str(self.current_epoch) + '.tar'))
+            if is_main_device(self.cuda_id, self.main_device):
+                self.save_checkpoint(
+                    os.path.join(self.output_dir, 'checkpoints',
+                                 str(self.current_epoch) + '.tar'))
 
             # tensorboard global step
             self.tb_iters += 1
@@ -207,28 +281,16 @@ class Trainer:
         # Main loop
         st_time = time.time()
 
-        # cache prediction and gt of val
-        # val_len = len(self.val_dl)
-        # prediction_val = np.empty(val_len)
-        # label_val = np.empty(val_len)
-
         for i, batch in enumerate(iter_bar):
             # Load data
-            # data = u.send_to_device(u.convert_double_to_float(data))
-
-            # (veh_cate_features, veh_dense_features, driver_cate_features,
-            #  driver_dense_features, polylines, polynum,
-            #  attention_mask) = self.model.preprocess_inputs(data['inputs'])
-
-            predictions = self.model(batch, device)
+            predictions = self.model(batch, self.device)
 
             # Compute loss and backpropagation if training
             if mode == 'train':
-                loss = self.compute_loss(predictions, batch, device)
+                loss = self.compute_loss(predictions, batch, self.device)
                 loss.backward()
                 self.optimizer.step()
                 self.optimizer.zero_grad()
-                iter_bar.set_description(f'loss={loss.item():.3f}')
 
             # Keep time
             minibatch_time = time.time() - st_time
@@ -238,18 +300,30 @@ class Trainer:
             minibatch_metrics, epoch_metrics = self.aggregate_metrics(
                 epoch_metrics, minibatch_time, predictions, batch, mode)
 
+            if mode == 'train' and is_main_device(self.cuda_id, self.main_device):
+                minfde_6 = (minibatch_metrics['min_fde_6'])
+                mr = (minibatch_metrics['miss_rate_6'])
+                iter_bar.set_description(
+                    f'loss={loss.item():.3f} / minfde6={minfde_6:.3f} / mr={mr:.3f}'
+                )
+
             # Log minibatch metrics to tensorboard during training
-            if mode == 'train':
+            if mode == 'train' and is_main_device(self.cuda_id,
+                                                  self.main_device):
                 self.log_tensorboard_train(minibatch_metrics)
 
-            # Display metrics at a predefined frequency
-            if i % self.log_period == self.log_period - 1 and len(
-                    iter_bar) - i != 1:
-                self.print_metrics(epoch_metrics, iter_bar, mode)
+                # # Display metrics at a predefined frequency
+                # if i % self.log_period == self.log_period - 1 and len(
+                #         iter_bar) - i != 1 and is_main_device(
+                #             self.cuda_id, self.main_device):
+                #     self.print_metrics(epoch_metrics, iter_bar, mode)
 
         # Log val metrics for the complete epoch to tensorboard
-        if mode == 'val':
+        if mode == 'val' and is_main_device(self.cuda_id, self.main_device):
             self.log_tensorboard_val(epoch_metrics)
+
+        if is_main_device(self.cuda_id, self.main_device) and self.viz:
+            self.log_tensorboard_att_scores()
 
         return epoch_metrics
 
@@ -312,7 +386,7 @@ class Trainer:
         # Compute different metrics
         for metric in metrics:
             minibatch_metrics[str(metric)] = metric(model_outputs, batch,
-                                                    device).item()
+                                                    self.device).item()
 
         epoch_metrics['minibatch_count'] += 1
         epoch_metrics['time_cost'] += minibatch_time
@@ -391,17 +465,6 @@ class Trainer:
         for metric_name, metric_val in minibatch_metrics.items():
             self.writer.add_scalar('train/' + metric_name, metric_val,
                                    self.tb_iters)
-        temple_att_scores = self.model.encoder.layers[-1].attention_probs.cpu()
-        self.writer.add_figure(
-            'train/encoder_att_scores',
-            show_heatmaps(temple_att_scores[:2, ...],
-                          xlabel='Key positions',
-                          ylabel='Query positions',
-                          titles=[
-                              'Head %d' % i
-                              for i in range(1, temple_att_scores.shape[1] + 1)
-                          ],
-                          figsize=(7, 3.5)), self.tb_iters)
         self.tb_iters += 1
 
     def log_tensorboard_val(self, epoch_metrics: Dict):
@@ -423,6 +486,38 @@ class Trainer:
                 res = metric_value / epoch_metrics['minibatch_count']
                 self.writer.add_scalar(mode + "/" + metric_name, res,
                                        self.tb_iters)
+
+    def log_tensorboard_att_scores(self, viz_num: Optional[int] = 2):
+        if self.multi_gpu:
+            temple_att_scores = self.model.module.encoder.layers[-1].attention_probs.cpu()
+            spatial_att_scores = self.model.module.aggregator.global_graph.attention_probs.cpu(
+            ) 
+        else:
+            temple_att_scores = self.model.encoder.layers[-1].attention_probs.cpu()
+            spatial_att_scores = self.model.aggregator.global_graph.attention_probs.cpu(
+            )
+        self.writer.add_figure(
+            'train/temporal_att_scores',
+            show_heatmaps(temple_att_scores[:viz_num, ...],
+                          xlabel='Key positions',
+                          ylabel='Query positions',
+                          titles=[
+                              'Head %d' % i
+                              for i in range(1, temple_att_scores.shape[1] + 1)
+                          ],
+                          figsize=(7, 3.5)), self.tb_iters)
+        self.writer.add_figure(
+            'train/spatial_att_scores',
+            show_heatmaps(spatial_att_scores[:viz_num, ...],
+                          xlabel='Key positions',
+                          ylabel='Query positions',
+                          titles=[
+                              'Head %d' % i
+                              for i in range(1, spatial_att_scores.shape[1] +
+                                             1)
+                          ],
+                          figsize=(7, 3.5)), self.tb_iters)
+        self.tb_iters += 1
 
     def log_tensorboard_fig(self, predictions: np.array, labels: np.array,
                             mode: str):
