@@ -142,7 +142,7 @@ class Trainer:
                              find_unused_parameters=True)
 
         # Initialize optimizer
-        self.optimizer = torch.optim.Adam(self.model.parameters(),
+        self.optimizer = torch.optim.AdamW(self.model.parameters(),
                                           lr=self.optim_args['lr'])
 
         # Initialize epochs
@@ -178,8 +178,7 @@ class Trainer:
         self.has_add_graph = False
 
         # Load checkpoint if checkpoint path is provided
-        if checkpoint_path is not None and is_main_device(
-                self.cuda_id, self.main_device):
+        if checkpoint_path is not None :
             logger.info("Loading checkpoint from " + checkpoint_path + " ...")
             self.load_checkpoint(checkpoint_path, just_weights=just_weights)
             logger.info("Done")
@@ -251,6 +250,7 @@ class Trainer:
                 # self.save_model(
                 #     os.path.join(self.output_dir, 'saved_model',
                 #                  'ori_best_adms_model.pth'))
+            dist.barrier()
 
             # Save checkpoint every epoch.
             if is_main_device(self.cuda_id, self.main_device):
@@ -431,7 +431,11 @@ class Trainer:
         """
         Loads checkpoint from given path
         """
-        checkpoint = torch.load(checkpoint_path)
+        if self.multi_gpu:
+            map_location = {'cuda:%d' % 0: 'cuda:%d' % self.cuda_id}
+            checkpoint = torch.load(checkpoint_path, map_location=map_location)
+        else:
+            checkpoint = torch.load(checkpoint_path)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         if not just_weights:
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])

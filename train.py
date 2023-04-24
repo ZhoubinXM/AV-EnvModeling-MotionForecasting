@@ -48,10 +48,6 @@ parser.add_argument("--viz",
 
 args = parser.parse_args()
 
-# Save cmd
-with open(os.path.join(args.output_dir, 'cmd'), 'w') as file:
-    file.write(' '.join(sys.argv))
-
 gv._init()
 time_begin = get_time()
 gv.set_value('time_begin', time_begin)
@@ -68,6 +64,10 @@ if not os.path.isdir(os.path.join(args.output_dir, 'saved_model')):
 if not os.path.isdir(
         os.path.join(args.output_dir, 'tensorboard_logs', time_begin)):
     os.makedirs(os.path.join(args.output_dir, 'tensorboard_logs', time_begin))
+
+# Save cmd
+with open(os.path.join(args.output_dir, 'cmd'), 'w') as file:
+    file.write(' '.join(sys.argv))
 
 # Load config
 with open(args.config, 'r') as yaml_file:

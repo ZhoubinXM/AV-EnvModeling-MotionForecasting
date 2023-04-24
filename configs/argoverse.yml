@@ -1,8 +1,8 @@
 # General parameters
-batch_size: 64
+batch_size: 128
 num_workers: 1
 log_freq: 100
-num_epochs: 200
+num_epochs: 50
 world_size: 8
 
 # Dataset
@@ -58,7 +58,7 @@ decoder_args:
 
 # Optimizer parameters
 optim_args:
-  lr: 0.001
+  lr: 0.0002
 
 
 losses: ['variety_loss']
