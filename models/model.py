@@ -29,7 +29,7 @@ class ADMS(nn.Module):
         :return outputs: Prediction Result
         """
         encodings = self.encoder(batch, device)
-        agg_encodings = self.aggregator(encodings, device)
-        outputs = self.decoder(agg_encodings)
+        # encodings = self.aggregator(encodings, device)
+        outputs = self.decoder(encodings)
 
         return outputs

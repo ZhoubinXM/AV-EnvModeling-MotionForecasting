@@ -4,8 +4,8 @@ from torch.nn import functional as F
 
 from layer.base import MLP, LayerNorm, GlobalGraph, CrossAttention, GlobalGraphRes
 from typing import Dict, Optional, List
-from train_eval.utils import get_from_mapping, merge_tensors, de_merge_tensors
-
+from train_eval.utils import get_from_mapping, merge_tensors, de_merge_tensors, get_max_st_from_spans
+import numpy as np
 
 class NewSubGraph(nn.Module):
     def __init__(self, args: Dict):
@@ -68,6 +68,33 @@ class NewSubGraph(nn.Module):
         batch_size = len(mapping)
         polyline_spans = get_from_mapping(mapping, 'polyline_spans')
         polyline_matrixs = get_from_mapping(mapping, 'matrix')
+
+        self.hidden_size = 128
+        spatial_num, slice_num_list = get_max_st_from_spans(polyline_spans)
+        max_spatial_num = max(spatial_num)
+        max_vector_num = max(max(row) for row in slice_num_list)
+        mask_spatial_vector = np.zeros([batch_size, max_spatial_num, max_vector_num, self.hidden_size])
+        for i_data in range(batch_size):
+            input_list: List[np.ndarray] = []
+            for poly_idx, polyline_span in enumerate(polyline_spans[i_data]):
+                poly_tensor:np.ndarray = np.pad(
+                    polyline_matrixs[i_data][polyline_span],
+                    ((0, max_vector_num - slice_num_list[i_data][poly_idx]),
+                     (0, 0)),
+                    'constant',
+                    constant_values=(-1, -1))
+                mask_spatial_vector[i_data][poly_idx][:(slice_num_list[i_data][poly_idx]), :] = 1.
+                input_list.append(poly_tensor)
+            slice_num_list[i_data] += [0]*(max_spatial_num - spatial_num[i_data])
+            input_list = np.pad(input_list,
+                                ((0, max_spatial_num - len(input_list)), (0, 0), (0, 0)),
+                                'constant',
+                                constant_values=((-1, -1), (-1, -1), (-1, -1)))
+            input_list_list.append(input_list)
+        # Shape[B, S, T, D]
+        all_input_tensor = torch.tensor(input_list_list, dtype=torch.float, device=device)
+
+
         for i_data in range(batch_size):
             input_list: List[torch.Tensor] = []
             map_input_list: List[torch.Tensor] = []

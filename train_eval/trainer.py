@@ -25,7 +25,8 @@ from train_eval import logger
 from datasets.adms_dataset import adms_collate
 from train_eval.initialization import initialize_adms_model,\
     initialize_adms_dataset, initialize_metric
-from train_eval.utils import batch_list_to_batch_tensors, is_main_device, show_heatmaps
+from train_eval.utils import batch_list_to_batch_tensors, is_main_device,\
+    show_heatmaps, get_max_st_from_spans, get_from_mapping
 import global_var
 
 global_var._init()
@@ -66,6 +67,8 @@ class Trainer:
         self.multi_gpu: bool = bool(cfg['use_multi_gpu'])
         self.world_size: int = int(
             os.environ["WORLD_SIZE"]) if 'WORLD_SIZE' in os.environ else 0
+        self.past_length = int(cfg['past_length'])
+        self.pred_length = int(cfg['pred_length'])
 
         # cuda or cpu
         self.main_device: int = int(cfg['main_device'])
@@ -90,10 +93,46 @@ class Trainer:
 
         # Initialize datasets:
         self.train_dataset = initialize_adms_dataset(cfg['dataset'],
-                                                     cfg['datafile'])
+                                                     cfg['train_datafile'])
         self.val_dataset = initialize_adms_dataset(cfg['dataset'],
-                                                   cfg['datafile'],
+                                                   cfg['val_datafile'],
                                                    mode='val')
+
+        if cfg['encoder_type'] == 'wayformer_enc' and (
+                'max_temporal' not in cfg['encoder_args'].keys()
+                or 'max_spatial' not in cfg['encoder_args'].keys()):
+            train_dataloader = torch.utils.data.DataLoader(
+                self.train_dataset,
+                batch_size=self.batch_size,
+                collate_fn=batch_list_to_batch_tensors)
+
+            val_dataloader = torch.utils.data.DataLoader(
+                self.val_dataset,
+                shuffle=False,
+                batch_size=self.batch_size,
+                collate_fn=batch_list_to_batch_tensors)
+
+            max_spatial_num, max_vector_num = 0, 0
+            for mapping in train_dataloader:
+                polyline_spans = get_from_mapping(mapping, 'polyline_spans')
+                spatial_num, slice_num_list = get_max_st_from_spans(
+                    polyline_spans)
+                if max(spatial_num) > max_spatial_num:
+                    max_spatial_num = max(spatial_num)
+                if max(max(row) for row in slice_num_list) > max_vector_num:
+                    max_vector_num = max(max(row) for row in slice_num_list)
+            for mapping in val_dataloader:
+                polyline_spans = get_from_mapping(mapping, 'polyline_spans')
+                spatial_num, slice_num_list = get_max_st_from_spans(
+                    polyline_spans)
+                if max(spatial_num) > max_spatial_num:
+                    max_spatial_num = max(spatial_num)
+                if max(max(row) for row in slice_num_list) > max_vector_num:
+                    max_vector_num = max(max(row) for row in slice_num_list)
+            cfg['encoder_args'].update(
+                dict(max_temporal=max_vector_num, max_spatial=max_spatial_num))
+            print(max_spatial_num, max_vector_num)
+
         if self.multi_gpu:
             # use distributed data sampler
             self.train_sampler = DistributedSampler(self.train_dataset,
@@ -107,13 +146,15 @@ class Trainer:
                 batch_size=self.batch_size // self.world_size,
                 sampler=self.train_sampler,
                 shuffle=False,
-                collate_fn=batch_list_to_batch_tensors)
+                # collate_fn=batch_list_to_batch_tensors
+            )
             self.val_dataloader = torch.utils.data.DataLoader(
                 self.val_dataset,
                 batch_size=self.batch_size // self.world_size,
                 sampler=self.val_sampler,
                 shuffle=False,
-                collate_fn=batch_list_to_batch_tensors)
+                # collate_fn=batch_list_to_batch_tensors
+            )
         else:
             self.train_sampler = RandomSampler(self.train_dataset)
 
@@ -121,13 +162,15 @@ class Trainer:
                 self.train_dataset,
                 sampler=self.train_sampler,
                 batch_size=self.batch_size,
-                collate_fn=batch_list_to_batch_tensors)
+                # collate_fn=batch_list_to_batch_tensors
+            )
 
             self.val_dataloader = torch.utils.data.DataLoader(
                 self.val_dataset,
                 shuffle=False,
                 batch_size=self.batch_size,
-                collate_fn=batch_list_to_batch_tensors)
+                # collate_fn=batch_list_to_batch_tensors
+            )
 
         # Initialize model
         self.model = initialize_adms_model(
@@ -143,7 +186,7 @@ class Trainer:
 
         # Initialize optimizer
         self.optimizer = torch.optim.AdamW(self.model.parameters(),
-                                          lr=self.optim_args['lr'])
+                                           lr=self.optim_args['lr'])
 
         # Initialize epochs
         self.current_epoch = 0
@@ -178,7 +221,7 @@ class Trainer:
         self.has_add_graph = False
 
         # Load checkpoint if checkpoint path is provided
-        if checkpoint_path is not None :
+        if checkpoint_path is not None:
             logger.info("Loading checkpoint from " + checkpoint_path + " ...")
             self.load_checkpoint(checkpoint_path, just_weights=just_weights)
             logger.info("Done")
@@ -225,9 +268,7 @@ class Trainer:
             # Validate
             with torch.no_grad():
                 if is_main_device(self.cuda_id, self.main_device):
-                    val_iter_bar = tqdm(
-                        self.val_dataloader,
-                        desc='Val: ')
+                    val_iter_bar = tqdm(self.val_dataloader, desc='Val: ')
                 else:
                     val_iter_bar = self.val_dataloader
                 val_epoch_metrics = self.run_epoch('val', val_iter_bar)
@@ -239,7 +280,7 @@ class Trainer:
 
             # Update validation metric using first metric
             self.val_metric = val_epoch_metrics[str(
-                self.val_metrics[1])] / val_epoch_metrics['minibatch_count']
+                self.val_metrics[4])] / val_epoch_metrics['minibatch_count']
 
             # save best checkpoint when applicable
             if is_main_device(self.cuda_id, self.main_device
@@ -250,7 +291,8 @@ class Trainer:
                 # self.save_model(
                 #     os.path.join(self.output_dir, 'saved_model',
                 #                  'ori_best_adms_model.pth'))
-            dist.barrier()
+            if self.multi_gpu:
+                dist.barrier()
 
             # Save checkpoint every epoch.
             if is_main_device(self.cuda_id, self.main_device):
@@ -283,6 +325,17 @@ class Trainer:
 
         for i, batch in enumerate(iter_bar):
             # Load data
+            batch = u.send_to_device(u.convert_double_to_float(batch),
+                                     device=self.device)
+            batch['target_history'] = batch['target_history'][:, :self.
+                                                              past_length]
+            batch['target_future'] = batch['target_future'][:, :self.
+                                                            pred_length]
+            # batch = batch['target_history']
+            # self.model.eval()
+            # traced_model = torch.jit.trace(self.model, batch)
+            # traced_model.save("mlp_resmlp_2_3.pt")
+            
             predictions = self.model(batch, self.device)
 
             # Compute loss and backpropagation if training
@@ -300,11 +353,17 @@ class Trainer:
             minibatch_metrics, epoch_metrics = self.aggregate_metrics(
                 epoch_metrics, minibatch_time, predictions, batch, mode)
 
-            if mode == 'train' and is_main_device(self.cuda_id, self.main_device):
-                minfde_6 = (minibatch_metrics['min_fde_6'])
-                mr = (minibatch_metrics['miss_rate_6'])
+            if mode == 'train' and is_main_device(self.cuda_id,
+                                                  self.main_device):
+                # minfde_1 = (minibatch_metrics['min_fde_1'])
+                # mr = (minibatch_metrics['miss_rate_1'])
+                # iter_bar.set_description(
+                #     f'loss={loss.item():.3f} / minfde1={minfde_1:.3f} / mr={mr:.3f}'
+                # )
+                minfde = (minibatch_metrics['minfde'])
+                minade = (minibatch_metrics['minade'])
                 iter_bar.set_description(
-                    f'loss={loss.item():.3f} / minfde6={minfde_6:.3f} / mr={mr:.3f}'
+                    f'loss={loss.item():.3f} / minade={minade:.3f} / minfde={minfde:.3f}'
                 )
 
             # Log minibatch metrics to tensorboard during training
@@ -322,15 +381,15 @@ class Trainer:
         if mode == 'val' and is_main_device(self.cuda_id, self.main_device):
             self.log_tensorboard_val(epoch_metrics)
 
-        if is_main_device(self.cuda_id, self.main_device) and self.viz:
-            self.log_tensorboard_att_scores()
+        # if is_main_device(self.cuda_id, self.main_device) and self.viz:
+        #     self.log_tensorboard_att_scores()
 
         return epoch_metrics
 
     def learning_rate_decay(self, i_epoch, optimizer):
-        if i_epoch > 0 and i_epoch % 5 == 0:
+        if i_epoch > 15 and i_epoch % 10 == 0:
             for p in optimizer.param_groups:
-                p['lr'] *= 0.5
+                p['lr'] *= 0.9
 
     def compute_loss(self, model_outputs: torch.Tensor, ground_truth,
                      device) -> torch.Tensor:
@@ -339,13 +398,19 @@ class Trainer:
         """
         # TODO: Implement the calculation of the multi-loss
         loss_vals = [
-            loss(model_outputs, ground_truth, device) for loss in self.losses
+            loss(model_outputs, ground_truth, device)
+            if str(loss) not in ['MSELoss()', 'SmoothL1Loss()'] else loss(
+                model_outputs[0].squeeze(1).reshape(
+                    model_outputs[0].shape[0],
+                    -1), ground_truth['fut_traj'].reshape(
+                        model_outputs[0].shape[0], -1)) for loss in self.losses
         ]
-        total_loss = torch.tensor(0).float().to(device)
-        for n in range(len(loss_vals)):
-            total_loss += self.loss_weights[n] * loss_vals[n]
+        # total_loss = torch.tensor(0).float().to(device)
+        # for n in range(len(loss_vals)):
+        #     total_loss += self.loss_weights[n] * loss_vals[n]
 
-        return total_loss
+        # return total_loss
+        return loss_vals[0][0][-1]
 
     def compute_metric(self, model_outputs: torch.Tensor,
                        ground_truth: torch.Tensor) -> torch.Tensor:
@@ -385,13 +450,29 @@ class Trainer:
 
         # Compute different metrics
         for metric in metrics:
-            minibatch_metrics[str(metric)] = metric(model_outputs, batch,
-                                                    self.device).item()
+            if str(metric) in ['MSELoss()', 'SmoothL1Loss()']:
+                minibatch_metrics[str(metric)] = metric(
+                    model_outputs[0].squeeze(1).reshape(
+                        model_outputs[0].shape[0], -1),
+                    batch['fut_traj'].reshape(model_outputs[0].shape[0],
+                                              -1)).item()
+            elif str(metric) == "motion_loss":
+                metrics = ['motion_loss', 'cls_loss', 'reg_loss', 'minade', 'minfde']
+                out_metric = metric(
+                    model_outputs, batch, self.device)
+                for i, metric in enumerate(metrics):
+                    minibatch_metrics[metric] = out_metric[i][-1] 
+            else:
+                minibatch_metrics[str(metric)] = metric(
+                    model_outputs, batch, self.device).item()
 
         epoch_metrics['minibatch_count'] += 1
         epoch_metrics['time_cost'] += minibatch_time
         for metric in metrics:
-            epoch_metrics[str(metric)] += minibatch_metrics[str(metric)]
+            try:
+                epoch_metrics[str(metric)] += minibatch_metrics[str(metric)]
+            except:
+                 epoch_metrics[str(metric)] = minibatch_metrics[str(metric)]
 
         return minibatch_metrics, epoch_metrics
 
@@ -434,6 +515,9 @@ class Trainer:
         if self.multi_gpu:
             map_location = {'cuda:%d' % 0: 'cuda:%d' % self.cuda_id}
             checkpoint = torch.load(checkpoint_path, map_location=map_location)
+            checkpoint = {("module." + k) if not k.startswith("module") else k:
+                          v
+                          for k, v in checkpoint.items()}
         else:
             checkpoint = torch.load(checkpoint_path)
         self.model.load_state_dict(checkpoint['model_state_dict'])
@@ -447,10 +531,16 @@ class Trainer:
         """
         Saves checkpoint to given path
         """
+        state_dict = self.model.state_dict()
+        if self.multi_gpu:
+            state_dict = {
+                k[len("module."):]: v
+                for k, v in state_dict.items() if k.startswith("module")
+            }
         torch.save(
             {
                 'epoch': self.current_epoch + 1,
-                'model_state_dict': self.model.state_dict(),
+                'model_state_dict': state_dict,
                 'optimizer_state_dict': self.optimizer.state_dict(),
                 'val_metric': self.val_metric,
                 'min_val_metric': self.min_val_metric
@@ -493,11 +583,13 @@ class Trainer:
 
     def log_tensorboard_att_scores(self, viz_num: Optional[int] = 2):
         if self.multi_gpu:
-            temple_att_scores = self.model.module.encoder.layers[-1].attention_probs.cpu()
+            temple_att_scores = self.model.module.encoder.layers[
+                -1].attention_probs.cpu()
             spatial_att_scores = self.model.module.aggregator.global_graph.attention_probs.cpu(
-            ) 
+            )
         else:
-            temple_att_scores = self.model.encoder.layers[-1].attention_probs.cpu()
+            temple_att_scores = self.model.encoder.layers[
+                -1].attention_probs.cpu()
             spatial_att_scores = self.model.aggregator.global_graph.attention_probs.cpu(
             )
         self.writer.add_figure(

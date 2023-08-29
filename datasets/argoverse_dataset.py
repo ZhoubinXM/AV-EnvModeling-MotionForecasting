@@ -13,7 +13,7 @@ from typing import Dict, Any, Union, Optional
 
 import numpy as np
 import torch
-from argoverse.map_representation.map_api import ArgoverseMap
+# from argoverse.map_representation.map_api import ArgoverseMap
 from tqdm import tqdm
 
 from train_eval import logger

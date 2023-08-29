@@ -1,9 +1,6 @@
 # General parameters
-batch_size: 128
-num_workers: 1
+batch_size: 64
 log_freq: 100
-num_epochs: 10
-world_size: 8
 
 # Dataset
 dataset: argoverse_dataset
@@ -37,10 +34,17 @@ datafile:
 
 # Model parameters
 # Encoder parameters
-encoder_type: 'new_subgraph'
+encoder_type: 'wayformer_enc'
 encoder_args:
   hidden_size: 128
-  depth: 3
+  num_layers: 6
+  fusion_type: 'late_fusion'
+  attention_type: 'factorized_attention'
+  block_stack_type: 'sequential'
+  max_temporal: 19
+  max_spatial: 202
+  num_heads: 4
+  dropout: 0.5
 
 # Aggregator parameters
 aggregator_type: 'spatial_aggregator'
@@ -58,7 +62,7 @@ decoder_args:
 
 # Optimizer parameters
 optim_args:
-  lr: 0.0002
+  lr: 0.001
 
 
 losses: ['variety_loss']

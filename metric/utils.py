@@ -73,3 +73,38 @@ def miss_rate(traj: torch.Tensor, traj_gt: torch.Tensor, masks: torch.Tensor, di
     m_r = torch.sum(torch.as_tensor(dist > dist_thresh)) / len(dist)
 
     return m_r
+
+
+def traj_nll(pred_dist: torch.Tensor, traj_gt: torch.Tensor, masks: torch.Tensor):
+    """
+    Computes negative log likelihood of ground truth trajectory under a predictive distribution with a single mode,
+    with a bivariate Gaussian distribution predicted at each time in the prediction horizon
+    :param pred_dist: parameters of a bivariate Gaussian distribution, shape [batch_size, sequence_length, 5]
+    :param traj_gt: ground truth trajectory, shape [batch_size, sequence_length, 2]
+    :param masks: masks for varying length ground truth, shape [batch_size, sequence_length]
+    :return:
+    """
+    mu_x = pred_dist[:, :, 0]
+    mu_y = pred_dist[:, :, 1]
+    x = traj_gt[:, :, 0]
+    y = traj_gt[:, :, 1]
+
+    sig_x = pred_dist[:, :, 2]
+    sig_y = pred_dist[:, :, 3]
+    rho = pred_dist[:, :, 4]
+    ohr = torch.pow(1 - torch.pow(rho, 2), -0.5)
+
+    nll = 0.5 * torch.pow(ohr, 2) * \
+        (torch.pow(sig_x, 2) * torch.pow(x - mu_x, 2) +
+         torch.pow(sig_y, 2) * torch.pow(y - mu_y, 2) -
+         2 * rho * torch.pow(sig_x, 1) * torch.pow(sig_y, 1) * (x - mu_x) * (y - mu_y))\
+        - torch.log(sig_x * sig_y * ohr) + 1.8379
+
+    nll[nll.isnan()] = 0
+    nll[nll.isinf()] = 0
+
+    nll = torch.sum(nll * (1 - masks), dim=1) / torch.sum((1 - masks), dim=1)
+    # Note: Normalizing with torch.sum((1 - masks), dim=1) makes values somewhat comparable for trajectories of
+    # different lengths
+
+    return nll

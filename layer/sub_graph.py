@@ -19,6 +19,7 @@ class SubGraph(nn.Module):
         if self.training:
             return self._train(hidden_states, attention_mask)
         else:
+            poly_num = torch.tensor([hidden_states.shape[0]])
             # print(hidden_states.shape)
             # train_res = self._train(hidden_states, attention_mask)
             # inference_res = self._inference(hidden_states, attention_mask, poly_num)
@@ -31,6 +32,7 @@ class SubGraph(nn.Module):
         sub_graph_batch_size = hidden_states.shape[0]
         max_vector_num = hidden_states.shape[1]
         hidden_size = hidden_states.shape[2]
+        attention_mask = (attention_mask - 1) * 10000000.0
         for _, layer in enumerate(self.layers):
             encoded_hidden_states = layer(hidden_states)
             max_hidden, _ = torch.max(encoded_hidden_states + attention_mask, dim=1)
@@ -52,6 +54,7 @@ class SubGraph(nn.Module):
         sub_graph_batch_size = hidden_states.shape[0]
         max_vector_num = hidden_states.shape[1]
         hidden_size = hidden_states.shape[2]
+        attention_mask = (attention_mask - 1) * 10000000.0
         for _, layer in enumerate(self.layers):
             encoded_hidden_states = layer(hidden_states)
             max_hidden, _ = torch.max(encoded_hidden_states + attention_mask, dim=1)

@@ -2,6 +2,7 @@ import os
 import sys
 import math
 import time
+import pickle
 import inspect
 import logging
 import logging.handlers
@@ -14,10 +15,28 @@ import global_var as gv
 import matplotlib
 import matplotlib.pyplot as plt
 
+import torch.distributed as dist
+
 # Initialize device:
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 EPS = 1e-5
+anchor_info_path = './data/nuscenes/trainval/infos/motion_anchor_infos_mode6.pkl'
 
+# Dist info
+def is_dist_avail_and_initialized():
+    if not dist.is_available():
+        return False
+    if not dist.is_initialized():
+        return False
+    return True
+
+def get_rank():
+    if not is_dist_avail_and_initialized():
+        return 0
+    return dist.get_rank()
+
+def is_main_process():
+    return get_rank() == 0
 
 def send_to_device(data: Union[Dict, torch.Tensor], device: Optional[int] = 0):
     """
@@ -27,7 +46,7 @@ def send_to_device(data: Union[Dict, torch.Tensor], device: Optional[int] = 0):
         return data.to(device)
     elif type(data) is dict:
         for k, v in data.items():
-            data[k] = send_to_device(v)
+            data[k] = send_to_device(v, device=device)
         return data
     else:
         return data
@@ -46,6 +65,29 @@ def convert_double_to_float(data: Union[Dict, torch.Tensor]):
     else:
         return data
 
+def convert_list_to_array(data):
+    if type(data) is list:
+        return np.array(data)
+    elif type(data) is dict:
+        for k, v in data.items():
+            data[k] = convert_list_to_array(v)
+        return data
+    else:
+        return data
+
+def load_anchors():
+    """
+    Load the anchor information from a file.
+
+    Args:
+        anchor_info_path (str): The path to the file containing the anchor information.
+
+    Returns:
+        None
+    """
+    anchor_infos = pickle.load(open(anchor_info_path, 'rb'))
+    return torch.stack(
+        [torch.from_numpy(a) for a in anchor_infos])  # Nc, Pc, steps, 2
 
 def init_log(
         log_path: str,
@@ -228,6 +270,16 @@ def get_from_mapping(mapping: List[Dict], key=None):
         key = line_context.split('=')[0].strip()
     return [each[key] for each in mapping]
 
+def get_max_st_from_spans(spans: List[List[slice]]):
+    spatial_num = []
+    slice_num_list = []
+    for _, batch_value in enumerate(spans):
+        spatial_num.append(len(batch_value))
+        slice_num = []
+        for _, slice_value in enumerate(batch_value):
+            slice_num.append(slice_value.stop - slice_value.start)
+        slice_num_list.append(slice_num)
+    return spatial_num, slice_num_list
 
 def merge_tensors(tensors: List[torch.Tensor],
                   device,
@@ -258,10 +310,12 @@ def get_dis_point_2_points(point, points):
     elif points.ndim == 4:
         gt_traj = point.unsqueeze(1).repeat(1, 6, 1, 1)
         err = gt_traj - points[:, :, :, :2]
-        err = err[:, :, -1, :]
+        # min ade
+        # err = err[:, :, -1, :]
         err = torch.pow(err, exponent=2)
         err = torch.sum(err, dim=-1)
         err = torch.pow(err, exponent=0.5)
+        err = torch.sum(err, dim=2)
         err, idx = torch.min(err, dim=1)
         return err, idx
 
@@ -300,3 +354,42 @@ def show_heatmaps(matrices,
 
 
 numpy = lambda x, *args, **kwargs: x.detach().numpy(*args, **kwargs)
+
+
+def pos2posemb2d(pos, num_pos_feats=128, temperature=10000):
+    """
+    Convert 2D position into positional embeddings.
+
+    Args:
+        pos (torch.Tensor): Input 2D position tensor.
+        num_pos_feats (int, optional): Number of positional features. Default is 128.
+        temperature (int, optional): Temperature factor for positional embeddings. Default is 10000.
+
+    Returns:
+        torch.Tensor: Positional embeddings tensor.
+    """
+    scale = 2 * math.pi
+    pos = pos * scale  # 将位置向量缩放为弧度值，编码在sin，cos函数中的位置
+    dim_t = torch.arange(num_pos_feats, dtype=torch.float32, device=pos.device)
+    dim_t = temperature ** (2 * (dim_t // 2) / num_pos_feats)
+    pos_x = pos[..., 0, None] / dim_t
+    pos_y = pos[..., 1, None] / dim_t
+    pos_x = torch.stack((pos_x[..., 0::2].sin(), pos_x[..., 1::2].cos()), dim=-1).flatten(-2)
+    pos_y = torch.stack((pos_y[..., 0::2].sin(), pos_y[..., 1::2].cos()), dim=-1).flatten(-2)
+    posemb = torch.cat((pos_y, pos_x), dim=-1)
+    return posemb
+
+def norm_points(pos, pc_range):
+    """
+    Normalize the end points of a given position tensor.
+
+    Args:
+        pos (torch.Tensor): Input position tensor.
+        pc_range (List[float]): Point cloud range.
+
+    Returns:
+        torch.Tensor: Normalized end points tensor.
+    """
+    x_norm = (pos[..., 0] - pc_range[0]) / (pc_range[3] - pc_range[0])
+    y_norm = (pos[..., 1] - pc_range[1]) / (pc_range[4] - pc_range[1]) 
+    return torch.stack([x_norm, y_norm], dim=-1)

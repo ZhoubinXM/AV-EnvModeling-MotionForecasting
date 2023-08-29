@@ -7,3 +7,5 @@ output
 .history
 logs
 data
+result
+result/*

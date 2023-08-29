@@ -1,0 +1,72 @@
+# General parameters
+batch_size: 128
+num_workers: 1
+log_freq: 100
+num_epochs: 100
+world_size: 8
+
+# Dataset
+dataset: img_dataset
+train_datafile:
+  root_dir: '/data/guifeng/traject_model/train_dataset'
+val_datafile:
+  root_dir: '/data/guifeng/traject_model/val_dataset'
+
+
+
+# Model parameters
+# Encoder parameters
+encoder_type: 'img_bev_enc'
+encoder_args:
+  use_img: True
+  backbone: 'resnet50'
+  train_backbone: False
+  return_interm_layer: False
+  dilation: True
+  bev_feature_size: 14
+  hidden_size: 128
+  depth: 3
+
+# Aggregator parameters
+aggregator_type: 'spatial_aggregator'
+aggregator_args:
+  hidden_size: 128
+
+
+# Decoder parameters
+decoder_type: 'mlp'
+decoder_args:
+  hidden_size: 128
+  in_features: 128 + 128
+  pred_length: 12
+  pred_num: 1
+  pred_feature: 2
+
+
+# Optimizer parameters
+optim_args:
+  lr: 0.01
+
+
+losses: ['smooth_l1']
+loss_weights: [1]
+loss_args:
+  -
+
+tr_metrics: ['smooth_l1', 'min_ade', 'min_fde', 'miss_rate']
+tr_metric_args:
+  -
+  - k: 1
+  - k: 1
+  - k: 1
+    dist_thresh: 2.0
+
+
+val_metrics: ['smooth_l1', 'min_ade', 'min_fde', 'miss_rate']
+val_metric_args:
+  -
+  - k: 1
+  - k: 1
+  - k: 1
+    dist_thresh: 2.0
+

@@ -18,7 +18,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument("-c",
                     "--config",
                     help="Config file with dataset parameters",
-                    default="./configs/deepfm_subgraph_globalgraph_mlp.yml")
+                    # default="./configs/motionformer.yml")
+                    default="./configs/2d_img.yml")
 parser.add_argument("-r",
                     "--data_root",
                     help="Root directory with data",
@@ -30,7 +31,7 @@ parser.add_argument("-d",
 parser.add_argument("-o",
                     "--output_dir",
                     help="Directory to save checkpoints and logs",
-                    default="./output")
+                    default="./output/mlp_resmlp_2_3_full_retrain")
 parser.add_argument("-n",
                     "--num_epochs",
                     help="Number of epochs to run training for",
@@ -39,6 +40,7 @@ parser.add_argument("-w",
                     "--checkpoint",
                     help="Path to pre-trained or intermediate checkpoint",
                     default=None)
+                    # default="./output/mlp_resmlp_2_3_full/checkpoints/79.tar")
 parser.add_argument("--cuda", help="Use GPU", default=True)
 parser.add_argument("--main_device", help="Main device with cuda", default=0)
 parser.add_argument("--multi_gpu", help="Use Multi-GPU", action='store_true')

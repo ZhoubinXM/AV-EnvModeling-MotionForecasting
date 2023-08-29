@@ -26,10 +26,13 @@ class MissRateK(Metric):
         # Unpack arguments
         traj: torch.Tensor = predictions[0]
         probs: torch.Tensor = predictions[1]
-        gt_traj: list = get_from_mapping(mapping, 'labels')
-        gt_traj = torch.tensor(np.array(gt_traj),
-                               device=device,
-                               dtype=torch.float)
+        if not isinstance(mapping, dict):
+            gt_traj: list = get_from_mapping(mapping, 'labels')
+            gt_traj = torch.tensor(np.array(gt_traj),
+                                device=device,
+                                dtype=torch.float)
+        else:
+            gt_traj = mapping['target_future']
 
         # Useful params
         batch_size = probs.shape[0]
