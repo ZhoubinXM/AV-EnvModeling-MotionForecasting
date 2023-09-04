@@ -467,23 +467,41 @@ class MotionFormerDataset(Dataset):
         filter_index = track_in_rectangle
 
         # filter velocity
+        velocity = copy.deepcopy(data['frame_velocity'])
+        velocity.insert(0, np.array([np.inf, np.inf]))
+        velocity_valid_index = np.zeros_like(filter_index)
+        for i in range(len(velocity)):
+            if np.sqrt(velocity[i][0]**2 + velocity[i][1]**2) > 0.3:
+                velocity_valid_index[i] = 1
+        frame_fut_traj_valid_mask = data['frame_fut_traj_valid_mask']
+        frame_traj_velocity_valid_mask = np.ones_like(
+            frame_fut_traj_valid_mask)
+        for i in range(len(frame_fut_traj_valid_mask)):
+            if velocity_valid_index[i] == False:
+                frame_traj_velocity_valid_mask[i] = np.zeros((12, 2))
+        data['velocity_valid_index'] = velocity_valid_index
+        # wheather filter velocity before train
         if self.filter_velocity_before_train:
-            velocity = copy.deepcopy(data['frame_velocity'])
-            velocity.insert(0, np.array([np.inf, np.inf]))
-            velocity_valid_index = np.zeros_like(filter_index)
-            for i in range(len(velocity)):
-                if np.sqrt(velocity[i][0]**2 + velocity[i][1]**2) > 0.3:
-                    velocity_valid_index[i] = 1
-            data['velocity_valid_index'] = velocity_valid_index
             filter_index = np.logical_and(filter_index, velocity_valid_index)
         else:
-            data['velocity_valid_index'] = []
+            data['frame_fut_traj_valid_mask'] = np.logical_and(
+                frame_fut_traj_valid_mask,
+                frame_traj_velocity_valid_mask).astype(np.int)
 
         filter_keys = [
-            'frame_past_traj_ego', 'frame_fut_traj_ego', 'frame_ego2agent_mat',
-            'frame_agent2ego_mat', 'frame_agent2ego_t', 'frame_fut_traj',
-            'frame_fut_traj_valid_mask', 'frame_category_name', 'frame_anno_t',
-            'frame_anno_r', 'frame_past_traj', 'frame_past_traj_valid_mask'
+            'frame_past_traj_ego',
+            'frame_fut_traj_ego',
+            'frame_ego2agent_mat',
+            'frame_agent2ego_mat',
+            'frame_agent2ego_t',
+            'frame_fut_traj',
+            'frame_fut_traj_valid_mask',
+            'frame_category_name',
+            'frame_anno_t',
+            'frame_anno_r',
+            'frame_past_traj',
+            'frame_past_traj_valid_mask',
+            # 'velocity_valid_index'
         ]
         for k in filter_keys:
             data[k] = data[k][filter_index]

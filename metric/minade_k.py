@@ -41,8 +41,8 @@ class MinADEK(Metric):
         # Masks for variable length ground truth trajectories
         masks = gt_traj['masks'] if type(gt_traj) == dict and 'masks' in gt_traj.keys() \
             else torch.zeros(batch_size, sequence_length).to(traj.device)
-        masks = mapping['frame_fut_traj_valid_mask'].reshape(-1, traj.shape[-2], traj.shape[-1])
-        masks = 1 - (torch.sum(masks, dim=-1) > 0).int()  # 0 means valid [bs*A, sequence_length]
+        origin_masks = mapping['frame_fut_traj_valid_mask'].reshape(-1, traj.shape[-2], traj.shape[-1])
+        masks = 1 - (torch.sum(origin_masks, dim=-1) > 0).int()  # 0 means valid [bs*A, sequence_length]
 
         min_k = min(self.k, num_pred_modes)
 
@@ -51,5 +51,8 @@ class MinADEK(Metric):
         traj_topk = traj[batch_inds, inds_topk]
 
         errs, _ = min_ade(traj_topk, gt_traj, masks)
-
-        return torch.mean(errs)
+        
+        loss_sum_num = (torch.sum(1 - masks, dim=1).long() > 0).int().sum()
+        # return torch.mean(errs)
+        return torch.sum(errs) / loss_sum_num
+    

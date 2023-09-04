@@ -42,7 +42,8 @@ class MotionLoss(Metric):
                                  origin_masks,
                                  gt_traj_tensor * origin_masks,
                                  reduction='none')
-
-        return loss_.sum() / (pred_traj.shape[0] *
-                              pred_traj.shape[2]) + F.nll_loss(
-                                  pred_prob, argmin)
+        loss_sum_num = torch.sum((torch.sum(origin_masks, dim=-1) > 0).int())
+        argmin = argmin[torch.sum(1 - masks, dim=1) > 0]
+        pred_prob = pred_prob[torch.sum(1 - masks, dim=1) > 0]
+        # loss_sum_num = pred_traj.shape[0] * pred_traj.shape[2]
+        return loss_.sum() / (loss_sum_num) + F.nll_loss(pred_prob, argmin)
