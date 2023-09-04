@@ -145,7 +145,8 @@ class BEVRender(BaseRender):
                      points_per_step=20,
                      line_color=None,
                      dot_color=None,
-                     dot_size=25):
+                     dot_size=15):
+        future_traj = future_traj[~np.isnan(future_traj).any(axis=1)]
         if colormap:
             total_steps = (len(future_traj) - 1) * points_per_step + 1
             dot_colors = matplotlib.colormaps[colormap](np.linspace(
@@ -174,6 +175,16 @@ class BEVRender(BaseRender):
                                future_traj[:, 1],
                                linestyle='-',
                                c=line_color)
+            else:
+                self.axes.scatter(future_traj[:, 0],
+                                  future_traj[:, 1],
+                                  marker='o',
+                                  c='k',
+                                  s=10)
+                self.axes.plot(future_traj[:, 0],
+                               future_traj[:, 1],
+                               linestyle='-',
+                               c='grey')      
 
     def render_sdc_car(self):
         sdc_car_png = cv2.imread('sources/sdc_car.png')
@@ -223,6 +234,20 @@ class BEVRender(BaseRender):
         self.render_sdc_car()
         self.render_hd_map(nusc, nusc_maps, sample_token)
 
+    def render_scene_trajs(self, sample_token: str,
+                             hist_traj: np.array, fut_traj: np.array,
+                             nusc: NuScenes, prediction_helper: PredictHelper,
+                             nusc_maps):
+        self.render_anno_data(sample_token, nusc, prediction_helper)
+        # for pred_traj in pred_trajs:
+        for hist in hist_traj:
+            self._render_traj(hist, colormap='gray')
+        for fut in fut_traj:
+            if not np.isnan(fut).all():
+                self._render_traj(fut, colormap='winter')
+        self.render_sdc_car()
+        self.render_hd_map(nusc, nusc_maps, sample_token)
+
     def render_multi_pred_trajs(self, sample_token: str, pred_trajs: np.array,
                                 pred_scores, hist_traj: np.array,
                                 fut_traj: np.array, nusc: NuScenes,
@@ -244,3 +269,15 @@ class BEVRender(BaseRender):
         self._render_traj(fut_traj, colormap='winter')
         self.render_sdc_car()
         self.render_hd_map(nusc, nusc_maps, sample_token)
+
+    def render_anchors(self, anchor):
+        P, T, F = anchor.shape
+        for p in range(P):
+            anchor_p = anchor[p]
+            self._render_traj(anchor_p)
+
+    def render_transformed_anchors(self, trans_anchors):
+        """trans anchors shape [A, 6, 12, 2]"""
+        A, P, T, F = trans_anchors.shape
+        for agent in range(A):
+            self.render_anchors(trans_anchors[agent])

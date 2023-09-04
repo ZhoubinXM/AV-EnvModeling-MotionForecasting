@@ -12,11 +12,11 @@ dataset: motion_dataset
 train_datafile:
   # root_dir: '/data/guifeng/traject_model/train_dataset_vectornet'
   root_dir: '/data/jerome.zhou/nuscenes/train'
+  load_from_disk: True
 val_datafile:
   # root_dir: '/data/guifeng/traject_model/val_dataset_vectornet'
   root_dir: '/data/jerome.zhou/nuscenes/val'
-
-
+  load_from_disk: True
 
 # Model parameters
 # Encoder parameters

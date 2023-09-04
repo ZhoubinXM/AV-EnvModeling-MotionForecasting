@@ -1,0 +1,95 @@
+# General parameters
+batch_size: 1
+num_workers: 1
+log_freq: 100
+num_epochs: 100
+world_size: 8
+past_length: 5
+pred_length: 6
+
+# Dataset
+dataset: motion_former_dataset
+train_datafile:
+  # root_dir: '/data/guifeng/traject_model/train_dataset_vectornet'
+  root_dir: '/home/jerome.zhou/AV-EnvModeling-MotionForecasting/data/nuscenes/trainval/infos/nuscenes_v1.0-trainval_infos_motionformer_train.pkl'
+  load_from_disk: True
+  filter_velocity: False
+val_datafile:
+  # root_dir: '/data/guifeng/traject_model/val_dataset_vectornet'
+  root_dir: '/home/jerome.zhou/AV-EnvModeling-MotionForecasting/data/nuscenes/trainval/infos/nuscenes_v1.0-trainval_infos_motionformer_val.pkl'
+  load_from_disk: True
+  filter_velocity: False
+
+# Model parameters
+# Encoder parameters
+encoder_type: 'motionformer'
+encoder_args:
+  use_img: False
+  backbone: 'resnet50'
+  train_backbone: True
+  return_interm_layer: False
+  dilation: True
+  bev_feature_size: 14
+  hidden_size: 256
+  depth: 3
+  use_subgraph: False
+
+# Aggregator parameters
+aggregator_type: 'spatial_aggregator'
+aggregator_args:
+  hidden_size: 128
+
+
+# Decoder parameters
+decoder_type: 'motion_mtp'
+decoder_args:
+  hidden_size: 256
+  in_features: 128 + 128
+  pred_length: 6
+  pred_num: 6
+  pred_feature: 2
+
+
+# Optimizer parameters
+optim_args:
+  lr: 0.0001
+
+
+losses: ['motion_loss', 'min_fde']
+loss_weights: [0.5, 0.25]
+loss_args:
+  -
+  - k: 6
+
+tr_metrics: ['motion_loss', 'min_ade', 'min_fde', 'miss_rate', 'min_ade', 'min_fde', 'miss_rate']
+tr_metric_args:
+  -
+  - k: 1
+  - k: 1
+  - k: 1
+    dist_thresh: 2.0
+  - k: 5
+  - k: 6
+  - k: 6
+    dist_thresh: 2.0
+
+
+val_metrics: ['motion_loss', 'min_ade', 'min_fde', 'miss_rate', 'min_ade', 'min_fde', 'miss_rate', 'min_ade', 'min_fde', 'miss_rate', 'min_ade', 'min_fde', 'miss_rate']
+val_metric_args:
+  -
+  - k: 1
+  - k: 1
+  - k: 1
+    dist_thresh: 2.0
+  - k: 3
+  - k: 3
+  - k: 3
+    dist_thresh: 2.0
+  - k: 5
+  - k: 5
+  - k: 5
+    dist_thresh: 2.0
+  - k: 6
+  - k: 6
+  - k: 6
+    dist_thresh: 2.0

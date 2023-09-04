@@ -52,7 +52,7 @@ def k_means_anchors(k: int, future_traj_all: np.ndarray) -> np.ndarray:
     return anchors
 
 
-def run(num_modes: int = 6, predicted_traj_len: int = 6) -> None:
+def run(num_modes: int = 6, predicted_traj_len: int = 12) -> None:
     """
     Main function to run the script. It calculates anchor trajectories for each object type
     using the k-means algorithm and saves the result as a pickle file.
@@ -80,7 +80,7 @@ def run(num_modes: int = 6, predicted_traj_len: int = 6) -> None:
             instance_token = nusc.get('sample_annotation', ann_token)[
                 'instance_token']
             fut_traj_local = predict_helper.get_future_for_agent(
-                instance_token, sample_token, seconds=3, in_agent_frame=True)
+                instance_token, sample_token, seconds=6, in_agent_frame=True)
             if fut_traj_local.shape[0] < predicted_traj_len:
                 continue
             grouped_trajectories[type_id].append(fut_traj_local)
@@ -91,7 +91,7 @@ def run(num_modes: int = 6, predicted_traj_len: int = 6) -> None:
         kmeans_anchors.append(k_means_anchors(num_modes, grouped_trajectory))
     kmeans_anchors = np.stack(kmeans_anchors)
 
-    pickle.dump(kmeans_anchors, open('motion_anchor_infos_mode6.pkl', 'wb'))
+    pickle.dump(kmeans_anchors, open('motion_anchor_infos_mode_test.pkl', 'wb'))
 
 
 if __name__ == '__main__':

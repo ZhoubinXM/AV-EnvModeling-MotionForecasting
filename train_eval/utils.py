@@ -51,7 +51,6 @@ def send_to_device(data: Union[Dict, torch.Tensor], device: Optional[int] = 0):
     else:
         return data
 
-
 def convert_double_to_float(data: Union[Dict, torch.Tensor]):
     """
     Utility function to convert double tensors to float tensors in nested dictionary with Tensors
@@ -87,7 +86,7 @@ def load_anchors():
     """
     anchor_infos = pickle.load(open(anchor_info_path, 'rb'))
     return torch.stack(
-        [torch.from_numpy(a) for a in anchor_infos])  # Nc, Pc, steps, 2
+        [torch.from_numpy(a) for a in anchor_infos['anchors_all']])  # Nc, Pc, steps, 2
 
 def init_log(
         log_path: str,
@@ -318,6 +317,26 @@ def get_dis_point_2_points(point, points):
         err = torch.sum(err, dim=2)
         err, idx = torch.min(err, dim=1)
         return err, idx
+    
+def get_dis_point_2_points(point, points, masks):
+    """masks element 1 means invalid"""
+    if points.ndim == 2:
+        return np.sqrt(
+            np.square(points[:, 0] - point[0]) +
+            np.square(points[:, 1] - point[1]))
+    elif points.ndim == 4:
+        gt_traj = point.unsqueeze(1).repeat(1, 6, 1, 1)
+        masks_rpt = masks.unsqueeze(1).repeat(1, 6, 1)
+        err = gt_traj - points[:, :, :, :2]
+        # min ade
+        # err = err[:, :, -1, :]
+        err = torch.pow(err, exponent=2)  # 计算每个元素的平方
+        err = torch.sum(err, dim=-1)  # 计算平方后最后一维度的和
+        err = torch.pow(err, exponent=0.5)
+        err = torch.sum(err * (1 - masks_rpt), dim=2) / \
+            torch.clip(torch.sum((1 - masks_rpt), dim=2), min=1)
+        err, idx = torch.min(err, dim=1)
+        return err, idx
 
 
 def is_main_device(device, main_device: Optional[int] = 0) -> bool:
@@ -393,3 +412,47 @@ def norm_points(pos, pc_range):
     x_norm = (pos[..., 0] - pc_range[0]) / (pc_range[3] - pc_range[0])
     y_norm = (pos[..., 1] - pc_range[1]) / (pc_range[4] - pc_range[1]) 
     return torch.stack([x_norm, y_norm], dim=-1)
+
+def anchor_coordinate_transform(anchors, mat, trans, with_trans=True, with_rot=True):
+    G, P, T, F = anchors.shape
+    bs, A, _, _ = mat.shape
+    batch_anchors = []
+    transformed_anchors = anchors[None, ...]  # [1, 4, 6, 12, 2]
+    for i in range(bs):
+        rot_mat = mat[i]
+        t = trans[i]
+        if with_rot:
+            rot_mat = rot_mat[:, None, None, :, :]  # [A, 1, 1, 2, 2]
+            from einops import rearrange, repeat
+            # [1, 4, 6, 12, 2] -> [1, 4, 6, 2, 12]
+            transformed_anchors = rearrange(transformed_anchors, 'b g m t c -> b g m c t')
+            # [A, 4, 6, 2, 12]
+            transformed_anchors = torch.matmul(rot_mat, transformed_anchors)
+            # [A, 4, 6, 12, 2]
+            transformed_anchors = rearrange(transformed_anchors, 'b g m c t -> b g m t c')
+        if with_trans:
+            transformed_anchors += t[:, None, None, None, :2]
+        batch_anchors.append(transformed_anchors)
+    return torch.stack(batch_anchors)
+
+def traj_coordinate_transform(trajs, mat, trans, with_trans=True, with_rot=True):
+    """Mat shape [B, A, 2, 2]; Trans shape [B, A, 2]"""
+    B, A, P, T, F = trajs.shape  # [bs, A, 6, 12, 2]
+    batch_trajs = []
+    for i in range(B):
+        rot_mat = mat[i]
+        t = trans[i]
+        transformed_trajs = trajs[i, ...]  # [A, 6, 12, 2]
+        if with_rot:
+            rot_mat = rot_mat[:, None, :, :]  # [A, 1, 2, 2]
+            from einops import rearrange, repeat
+            # [A, 6, 12, 2] -> [A, 6, 2, 12]
+            transformed_trajs = rearrange(transformed_trajs, 'b m t c -> b m c t')
+            # [A, 6, 2, 12]
+            transformed_trajs = torch.matmul(rot_mat, transformed_trajs)
+            # [A, 6, 12, 2]
+            transformed_trajs = rearrange(transformed_trajs, 'b m c t -> b m t c')
+        if with_trans:
+            transformed_trajs += t[:, None, None, :2]
+        batch_trajs.append(transformed_trajs)
+    return torch.stack(batch_trajs)

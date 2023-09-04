@@ -25,6 +25,8 @@ parser.add_argument("-w",
                     "--checkpoint",
                     help="Path to pre-trained or intermediate checkpoint",
                     default="./output/mlp_resmlp_2_3_full/checkpoints/79.tar")
+parser.add_argument("--viz", action="store_true")
+parser.add_argument("--debug", action="store_true")
 args = parser.parse_args()
 
 # Make directories
@@ -38,6 +40,10 @@ if not os.path.isdir(os.path.join(args.output_dir, 'figs')):
 # Load config
 with open(args.config, 'r') as yaml_file:
     cfg = yaml.safe_load(yaml_file)
+
+# add config
+cfg['viz'] = args.viz
+cfg['debug'] = args.debug
 
 # Evaluate
 evaluator = Evaluator(cfg, args.data_root, args.data_dir, args.checkpoint)

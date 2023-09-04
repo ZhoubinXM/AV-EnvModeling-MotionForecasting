@@ -18,6 +18,7 @@ class VarietyLoss(Metric):
     def __call__(self, predictions, mapping, device) -> Tensor:
         pred_traj = predictions[0]
         pred_prob = predictions[1]
+        _, _, T, _ = pred_traj.shape
         if isinstance(mapping, dict):
             gt_traj = mapping['target_future']
         else:
@@ -54,7 +55,7 @@ class VarietyLoss(Metric):
 
         loss_ = F.smooth_l1_loss(pred_traj.gather(
             1,
-            argmin.repeat(6, 2, 1, 1).permute(3, 2, 0, 1)).squeeze(1),
+            argmin.repeat(T, 2, 1, 1).permute(3, 2, 0, 1)).squeeze(1),
                                  gt_traj_tensor,
                                  reduction='none')
 

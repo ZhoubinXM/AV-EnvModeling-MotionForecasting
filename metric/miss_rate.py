@@ -32,7 +32,9 @@ class MissRateK(Metric):
                                 device=device,
                                 dtype=torch.float)
         else:
-            gt_traj = mapping['target_future']
+            # gt_traj = mapping['target_future']
+            gt_traj = mapping['frame_fut_traj_ego'].reshape(
+                -1, traj.shape[-2], traj.shape[-1])
 
         # Useful params
         batch_size = probs.shape[0]
@@ -42,6 +44,8 @@ class MissRateK(Metric):
         # Masks for variable length ground truth trajectories
         masks = gt_traj['masks'] if type(gt_traj) == dict and 'masks' in gt_traj.keys() \
             else torch.zeros(batch_size, sequence_length).to(traj.device)
+        masks = mapping['frame_fut_traj_valid_mask'].reshape(-1, traj.shape[-2], traj.shape[-1])
+        masks = 1 - (torch.sum(masks, dim=-1) > 0).int()  # 0 means valid [bs*A, sequence_length]
 
         min_k = min(self.k, num_pred_modes)
 

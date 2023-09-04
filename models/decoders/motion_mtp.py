@@ -8,10 +8,11 @@ class MotionMTP(nn.Module):
         self.embed_dims = args['hidden_size']
         self.num_reg_fcs = 2
         self.former_layer = 3
-        self.predict_steps = 6
+        self.predict_steps = 12
         self._init_layers()
         self.unflatten_traj = nn.Unflatten(3, (self.predict_steps, 2))
         self.log_softmax = nn.LogSoftmax(dim=2)
+        self.use_last = True
 
     def forward(self, inter_states):
         outputs_trajs = []
@@ -22,13 +23,17 @@ class MotionMTP(nn.Module):
             tmp = self.unflatten_traj(tmp)
 
             # we use cumsum trick here to get the trajectory
-            # tmp[..., :2] = torch.cumsum(tmp[..., :2], dim=3)
+            tmp[..., :2] = torch.cumsum(tmp[..., :2], dim=3)
 
             outputs_class = self.log_softmax(outputs_class.squeeze(3))
             outputs_traj_scores.append(outputs_class)
             outputs_trajs.append(tmp)
-        outputs_traj_scores = torch.stack(outputs_traj_scores)  # [num_layer, B, A+1, 6]
-        outputs_trajs = torch.stack(outputs_trajs)  # [num_layer, B, A+1, 6, 6, 2]
+        outputs_traj_scores = torch.stack(outputs_traj_scores)  # [num_layer, B, A, 6]
+        outputs_trajs = torch.stack(outputs_trajs)  # [num_layer, B, A, 6, 6, 2]
+        # only use last layer result 
+        if self.use_last:
+            outputs_trajs = outputs_trajs[-1].reshape(-1, 6, 12, 2)
+            outputs_traj_scores = outputs_traj_scores[-1].reshape(-1, 6)
         return outputs_trajs, outputs_traj_scores
 
     def _init_layers(self):
@@ -50,7 +55,7 @@ class MotionMTP(nn.Module):
         for _ in range(self.num_reg_fcs - 1):
             traj_reg_branch.append(nn.Linear(self.embed_dims, self.embed_dims))
             traj_reg_branch.append(nn.ReLU())
-        traj_reg_branch.append(nn.Linear(self.embed_dims, 6 * 2))
+        traj_reg_branch.append(nn.Linear(self.embed_dims, self.predict_steps * 2))
         traj_reg_branch = nn.Sequential(*traj_reg_branch)
 
         def _get_clones(module, N):

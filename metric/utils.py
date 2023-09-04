@@ -1,9 +1,13 @@
 import math
 import torch
 from typing import Tuple
+import numpy as np
+
+epsilon = np.finfo(float).eps
 
 
-def min_fde(traj: torch.Tensor, traj_gt: torch.Tensor, masks: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def min_fde(traj: torch.Tensor, traj_gt: torch.Tensor,
+            masks: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Computes final displacement error for the best trajectory is a set, with respect to ground truth
     :param traj: predictions, shape [batch_size, num_modes, sequence_length, 2]
@@ -12,9 +16,17 @@ def min_fde(traj: torch.Tensor, traj_gt: torch.Tensor, masks: torch.Tensor) -> T
     :return errs, inds: errors and indices for modes with min error, shape [batch_size]
     """
     num_modes = traj.shape[1]
+    # traj_gt_rpt = traj_gt.unsqueeze(1).repeat(1, num_modes, 1, 1)
+    lengths = torch.sum(1 - masks, dim=1).long()
+    # inds = lengths.unsqueeze(1).unsqueeze(2).unsqueeze(3).repeat(1, num_modes, 1, 2) - 1
+    valid_mask = lengths > 0  # valid mask 去除全为填充的未来轨迹
+    traj = traj[valid_mask]
+    traj_gt = traj_gt[valid_mask]
+    masks = masks[valid_mask]
     traj_gt_rpt = traj_gt.unsqueeze(1).repeat(1, num_modes, 1, 1)
-    lengths = torch.sum(1-masks, dim=1).long()
-    inds = lengths.unsqueeze(1).unsqueeze(2).unsqueeze(3).repeat(1, num_modes, 1, 2) - 1
+    lengths = torch.sum(1 - masks, dim=1).long()
+    inds = lengths.unsqueeze(1).unsqueeze(2).unsqueeze(3).repeat(
+        1, num_modes, 1, 2) - 1
 
     traj_last = torch.gather(traj[..., :2], dim=2, index=inds).squeeze(2)
     traj_gt_last = torch.gather(traj_gt_rpt, dim=2, index=inds).squeeze(2)
@@ -28,7 +40,8 @@ def min_fde(traj: torch.Tensor, traj_gt: torch.Tensor, masks: torch.Tensor) -> T
     return err, inds
 
 
-def min_ade(traj: torch.Tensor, traj_gt: torch.Tensor, masks: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def min_ade(traj: torch.Tensor, traj_gt: torch.Tensor,
+            masks: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Computes average displacement error for the best trajectory is a set, with respect to ground truth
     :param traj: predictions, shape [batch_size, num_modes, sequence_length, 2]
@@ -44,13 +57,17 @@ def min_ade(traj: torch.Tensor, traj_gt: torch.Tensor, masks: torch.Tensor) -> T
     err = torch.pow(err, exponent=2)
     err = torch.sum(err, dim=3)
     err = torch.pow(err, exponent=0.5)
-    err = torch.sum(err * (1 - masks_rpt), dim=2) / torch.sum((1 - masks_rpt), dim=2)
+    err = torch.sum(err * (1 - masks_rpt), dim=2) / \
+        torch.clip(torch.sum((1 - masks_rpt), dim=2), min=1)
     err, inds = torch.min(err, dim=1)
 
     return err, inds
 
 
-def miss_rate(traj: torch.Tensor, traj_gt: torch.Tensor, masks: torch.Tensor, dist_thresh: float = 2) -> torch.Tensor:
+def miss_rate(traj: torch.Tensor,
+              traj_gt: torch.Tensor,
+              masks: torch.Tensor,
+              dist_thresh: float = 2) -> torch.Tensor:
     """
     Computes miss rate for mini batch of trajectories, with respect to ground truth and given distance threshold
     :param traj: predictions, shape [batch_size, num_modes, sequence_length, 2]
@@ -70,12 +87,14 @@ def miss_rate(traj: torch.Tensor, traj_gt: torch.Tensor, masks: torch.Tensor, di
     dist[masks_rpt.bool()] = -math.inf
     dist, _ = torch.max(dist, dim=2)
     dist, _ = torch.min(dist, dim=1)
-    m_r = torch.sum(torch.as_tensor(dist > dist_thresh)) / len(dist)
+    m_r = torch.sum(torch.as_tensor(dist > dist_thresh)) / \
+        (1-masks.bool().all(dim=-1).int()).sum()
 
     return m_r
 
 
-def traj_nll(pred_dist: torch.Tensor, traj_gt: torch.Tensor, masks: torch.Tensor):
+def traj_nll(pred_dist: torch.Tensor, traj_gt: torch.Tensor,
+             masks: torch.Tensor):
     """
     Computes negative log likelihood of ground truth trajectory under a predictive distribution with a single mode,
     with a bivariate Gaussian distribution predicted at each time in the prediction horizon

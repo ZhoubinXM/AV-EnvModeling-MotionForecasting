@@ -16,6 +16,7 @@ from datasets.adms_dataset import ADMSDataset
 from datasets.argoverse_dataset import ArgoverseDataset
 from datasets.prediction_dataset import PredictionDataset
 from datasets.motion_dataset import MotionDataset
+from datasets.motionformer_dataset import MotionFormerDataset
 
 from metric.variety_loss import VarietyLoss
 from metric.minfde_k import MinFDEK
@@ -37,7 +38,8 @@ def initialize_adms_dataset(
         'adms_dataset': ADMSDataset,
         'argoverse_dataset': ArgoverseDataset,
         'img_dataset': PredictionDataset,
-        'motion_dataset': MotionDataset
+        'motion_dataset': MotionDataset,
+        'motion_former_dataset': MotionFormerDataset
     }
     return datasets[dataset_type](data_file, mode)
 

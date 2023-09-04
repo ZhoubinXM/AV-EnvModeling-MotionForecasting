@@ -90,6 +90,7 @@ class Trainer:
                 print(
                     f"CUDA: {self.cuda_id} - RANK: {os.environ['LOCAL_RANK']} / WORLD_SIZE: {os.environ['WORLD_SIZE']}"
                 )
+            self.batch_size *= self.world_size
 
         # Initialize datasets:
         self.train_dataset = initialize_adms_dataset(cfg['dataset'],
@@ -327,10 +328,7 @@ class Trainer:
             # Load data
             batch = u.send_to_device(u.convert_double_to_float(batch),
                                      device=self.device)
-            batch['target_history'] = batch['target_history'][:, :self.
-                                                              past_length]
-            batch['target_future'] = batch['target_future'][:, :self.
-                                                            pred_length]
+
             # batch = batch['target_history']
             # self.model.eval()
             # traced_model = torch.jit.trace(self.model, batch)
@@ -355,16 +353,16 @@ class Trainer:
 
             if mode == 'train' and is_main_device(self.cuda_id,
                                                   self.main_device):
-                # minfde_1 = (minibatch_metrics['min_fde_1'])
-                # mr = (minibatch_metrics['miss_rate_1'])
-                # iter_bar.set_description(
-                #     f'loss={loss.item():.3f} / minfde1={minfde_1:.3f} / mr={mr:.3f}'
-                # )
-                minfde = (minibatch_metrics['minfde'])
-                minade = (minibatch_metrics['minade'])
+                minfde_1 = (minibatch_metrics['min_fde_1'])
+                mr = (minibatch_metrics['miss_rate_1'])
                 iter_bar.set_description(
-                    f'loss={loss.item():.3f} / minade={minade:.3f} / minfde={minfde:.3f}'
+                    f'loss={loss.item():.3f} / minfde1={minfde_1:.3f} / mr1={mr:.3f}'
                 )
+                # minfde = (minibatch_metrics['minfde'])
+                # minade = (minibatch_metrics['minade'])
+                # iter_bar.set_description(
+                #     f'loss={loss.item():.3f} / minade={minade:.3f} / minfde={minfde:.3f}'
+                # )
 
             # Log minibatch metrics to tensorboard during training
             if mode == 'train' and is_main_device(self.cuda_id,
@@ -405,12 +403,12 @@ class Trainer:
                     -1), ground_truth['fut_traj'].reshape(
                         model_outputs[0].shape[0], -1)) for loss in self.losses
         ]
-        # total_loss = torch.tensor(0).float().to(device)
-        # for n in range(len(loss_vals)):
-        #     total_loss += self.loss_weights[n] * loss_vals[n]
+        total_loss = torch.tensor(0).float().to(device)
+        for n in range(len(loss_vals)):
+            total_loss += self.loss_weights[n] * loss_vals[n]
 
-        # return total_loss
-        return loss_vals[0][0][-1]
+        return total_loss
+        # return loss_vals[0][0][-1]
 
     def compute_metric(self, model_outputs: torch.Tensor,
                        ground_truth: torch.Tensor) -> torch.Tensor:
@@ -456,12 +454,12 @@ class Trainer:
                         model_outputs[0].shape[0], -1),
                     batch['fut_traj'].reshape(model_outputs[0].shape[0],
                                               -1)).item()
-            elif str(metric) == "motion_loss":
-                metrics = ['motion_loss', 'cls_loss', 'reg_loss', 'minade', 'minfde']
-                out_metric = metric(
-                    model_outputs, batch, self.device)
-                for i, metric in enumerate(metrics):
-                    minibatch_metrics[metric] = out_metric[i][-1] 
+            # elif str(metric) == "motion_loss":
+            #     metrics = ['motion_loss', 'cls_loss', 'reg_loss', 'minade', 'minfde']
+            #     out_metric = metric(
+            #         model_outputs, batch, self.device)
+            #     for i, metric in enumerate(metrics):
+            #         minibatch_metrics[metric] = out_metric[i][-1] 
             else:
                 minibatch_metrics[str(metric)] = metric(
                     model_outputs, batch, self.device).item()
