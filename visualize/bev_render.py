@@ -165,7 +165,7 @@ class BEVRender(BaseRender):
                               c=dot_colors,
                               s=dot_size)
         else:
-            if isinstance(dot_color, np.ndarray):
+            if dot_color and line_color:
                 self.axes.scatter(future_traj[:, 0],
                                   future_traj[:, 1],
                                   marker='o',
@@ -270,14 +270,28 @@ class BEVRender(BaseRender):
         self.render_sdc_car()
         self.render_hd_map(nusc, nusc_maps, sample_token)
 
-    def render_anchors(self, anchor):
+    def render_anchors(self, anchor, probs=None):
         P, T, F = anchor.shape
+        top_prob_idx = P - probs.argsort().argsort() - 1
+        colors = ['#000000', '#1a1a1a', '#333333', '#4d4d4d', '#666666', '#808080']
         for p in range(P):
             anchor_p = anchor[p]
-            self._render_traj(anchor_p)
+            try:
+                c = colors[top_prob_idx[p]]
+            except:
+                c = None
+            self._render_traj(anchor_p, dot_color=c, line_color=c)
 
-    def render_transformed_anchors(self, trans_anchors):
+    def render_transformed_anchors(self, trans_anchors, pred_probs=None):
         """trans anchors shape [A, 6, 12, 2]"""
         A, P, T, F = trans_anchors.shape
         for agent in range(A):
-            self.render_anchors(trans_anchors[agent])
+            self.render_anchors(trans_anchors[agent], pred_probs[agent])
+    
+    def render_bs_trajs(self, trajs, probs):
+        A, P, T, F = trajs.shape
+        for agent in range(A):
+            self.render_multi_mode_trajs(trajs[agent], probs[agent])
+    
+    # def render_multi_mode_trajs(self, trajs, probs):
+

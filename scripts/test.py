@@ -45,10 +45,10 @@ def main(version: str, data_root: str,
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Perform Inference with baseline models.')
-    parser.add_argument('--version', help='nuScenes version number.')
-    parser.add_argument('--data_root', help='Directory storing NuScenes data.', default='/data/sets/nuscenes')
-    parser.add_argument('--split_name', help='Data split to run inference on.')
-    parser.add_argument('--output_dir', help='Directory to store output files.')
+    parser.add_argument('--version', help='nuScenes version number.', default='v1.0-trainval')
+    parser.add_argument('--data_root', help='Directory storing NuScenes data.', default='./data/nuscenes/trainval')
+    parser.add_argument('--split_name', help='Data split to run inference on.', default='val')
+    parser.add_argument('--output_dir', help='Directory to store output files.', default='./submit/test')
     parser.add_argument('--config_name', help='Config file to use.', default='predict_2020_icra.json')
 
     args = parser.parse_args()

@@ -16,7 +16,7 @@ train_datafile:
   filter_velocity: False
 val_datafile:
   # root_dir: '/data/guifeng/traject_model/val_dataset_vectornet'
-  root_dir: '/home/jerome.zhou/AV-EnvModeling-MotionForecasting/data/nuscenes/trainval/infos/nuscenes_v1.0-trainval_infos_motionformer_val.pkl'
+  root_dir: '/home/jerome.zhou/AV-EnvModeling-MotionForecasting/data/nuscenes/trainval/infos/nuscenes_v1.0-mini_infos_motionformer_val.pkl'
   load_from_disk: True
   filter_velocity: False
 
@@ -55,11 +55,10 @@ optim_args:
   lr: 0.0001
 
 
-losses: ['motion_loss', 'min_fde']
-loss_weights: [0.5, 0.25]
+losses: ['motion_loss']
+loss_weights: [0.5]
 loss_args:
   -
-  - k: 6
 
 tr_metrics: ['motion_loss', 'min_ade', 'min_fde', 'miss_rate', 'min_ade', 'min_fde', 'miss_rate']
 tr_metric_args:

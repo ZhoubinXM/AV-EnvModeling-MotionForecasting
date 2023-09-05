@@ -343,7 +343,7 @@ class Evaluator:
             nusc=self.nusc,
             prediction_helper=self.predict_helper,
             nusc_maps=self.nusc_maps)
-        self.bev_render.render_transformed_anchors(pred_fut_traj_ego)
+        self.bev_render.render_transformed_anchors(pred_fut_traj_ego, torch.exp(pred_probs).cpu().detach().numpy())
         file_path = os.path.join(self.output_dir, "figs",
                                  "{}.jpg".format(sample_token))
         self.bev_render.save_fig(file_path)
